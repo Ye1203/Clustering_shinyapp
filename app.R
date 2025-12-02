@@ -94,6 +94,8 @@ server <- function(input, output, session) {
   current_ident <- reactiveVal(NULL)
   subset_data_path <- reactiveVal(NULL)
   plot_title <- reactiveVal(NULL)
+  harmony_state <- reactiveVal(NULL)
+  harmony_meta_state <- reactiveVal(NULL)
   
   # CONTROL STEP STATUS
   status <- reactiveValues(
@@ -1167,6 +1169,14 @@ server <- function(input, output, session) {
       )
   })
   
+  observeEvent(input$integration_harmony, {
+    harmony_state(input$integration_harmony)
+  })
+  
+  observeEvent(input$harmony_metadata, {
+    harmony_meta_state(input$harmony_metadata)
+  })
+  
   # Harmony metadata UI
   output$harmony_metadata_ui <- renderUI({
     req(seuratObj())
@@ -1187,7 +1197,8 @@ server <- function(input, output, session) {
       div(
         style = "margin-left:40px;",
         textOutput("harmony_metadata_preview")
-      )
+      ),
+    br()
     )
   })
   
@@ -1198,7 +1209,11 @@ server <- function(input, output, session) {
     vals <- seuratObj()@meta.data[[input$harmony_metadata]]
     unique_vals <- unique(vals)
     preview_vals <- unique_vals[1:min(10, length(unique_vals))]
-    paste(preview_vals, collapse = ", ")
+    result <- paste(preview_vals, collapse = ", ")
+    if(length(unique_vals) > 10){
+      result <- paste0(result, ", ...")
+    }
+    return(paste("Preview values:", result))
   })
   
   # NEIGHBOR STEP SERVER
@@ -1210,13 +1225,19 @@ server <- function(input, output, session) {
                             p("The waiting time is related to the size of the dataset and number of PCs.")
                           ), footer = NULL, easyClose = FALSE))
     tryCatch({
-      if(input$`Integration (Harmony)`){
+      if(input$integration_harmony){
         req(input$harmony_metadata)
-        seuratObj <- RunHarmony(seuratObj(), group.by.vars = input$harmony_metadata, verbose = FALSE)
-        seuratObj(FindNeighbors(seuratObj(), reduction = "harmony", dims = 1:input$nn_dims, verbose = FALSE))
+        seuratObj <- RunHarmony(seuratObj(), group.by.vars = input$harmony_metadata, reduction.use = "pca",
+                                dims.use = 1:input$npc, assay.use = "RNA", reduction.save = "harmony", 
+                                project.dim = TRUE, verbose = FALSE)
+        seuratObj(FindNeighbors(seuratObj, reduction = "harmony", dims = 1:input$nn_dims, verbose = FALSE))
       } else {
-        seuratObj(FindNeighbors(seuratObj(), dims = 1:input$nn_dims, verbose = FALSE))
+        seuratObj(FindNeighbors(seuratObj(), reduction = "pca", dims = 1:input$nn_dims, verbose = FALSE))
       }
+      updateCheckboxInput(session, "integration_harmony",
+                          value = harmony_state())
+      updateSelectInput(session, "harmony_metadata",
+                        selected = harmony_meta_state())
       status$normalized <- TRUE
       status$scaled <- TRUE
       status$pca <- TRUE
@@ -2189,6 +2210,10 @@ server <- function(input, output, session) {
       dotplot1_plot(NULL)
       dotplot2_plot(NULL)
       current_ident(NULL)
+      subset_data_path(NULL)
+      plot_title(NULL)
+      harmony_state(NULL)
+      harmony_meta_state(NULL)
       shinyjs::runjs("location.reload();")
       removeModal()
     }, error = function(e) {
