@@ -15,6 +15,13 @@ library(harmony)
 
 ui <- fluidPage(
   tags$head(
+      tags$style(HTML("
+    .harmony-checkbox label {
+      color: red !important;
+      font-weight: bold !important;
+      margin-left: 4px;
+    }
+  ")),
     tags$style(HTML("
       .tooltip-circle {
         position: relative;
@@ -460,20 +467,30 @@ server <- function(input, output, session) {
       ui_list <- append(ui_list, list(
         div(
           style = "display:flex; align-items:center; gap:6px;",
-        tags$p("🔘 RENAME AND SUBSET", style = "color:black; font-weight:bold; font-size:14px; margin:0;"),
-        div(class = "tooltip-text", 
-            div(class = "tooltip-title", "RENAME AND SUBSET"),
-            div(class = "tooltip-divider"),
-            div(HTML("\"Metadata column name\" is the name in seurat, which is the identification of cluster.<br>
+          tags$p(
+            "🔘 RENAME AND SUBSET",
+            style = "color:black; font-weight:bold; font-size:14px; margin:0;"
+          ),
+          div(
+            class = "tooltip-circle",
+            "?",
+            span(
+              class = "tooltip-text",
+              div(class = "tooltip-title", "RENAME AND SUBSET"),
+              div(class = "tooltip-divider"),
+              div(HTML("\"Metadata column name\" is the name in seurat, which is the identification of cluster.<br>
              Rename the corresponding input box, then select only the desired samples in the checkboxes and click \"subset\".<br>
-             After subsetting, click \"Analysis on Subset Data\". The system will reset ShinyApp and use the subset data as<br>
+             After subsetting, click \"Analysis on Subset Data\". The system will reset ShinyApp and use the subset data as 
              input for analysis.<br>
              It is recommended to save the data after both renaming and subsetting."))
-        )
+            )
+          )
         ),
+        
         uiOutput("final_ui")
       ))
     }
+    
     
     tagList(ui_list)
   })
@@ -626,24 +643,21 @@ server <- function(input, output, session) {
       ),
       fluidRow(
         div(
-          style = "display: flex; align-items: center; gap: 6px; margin-left:30px;",
-          
-          tags$input(
-            id = "integration_harmony",
-            type = "checkbox",
-            style = "width:16px; height:16px; cursor:pointer;"
+          style = "display: flex; margin-left:30px;",
+          div(
+            class = "harmony-checkbox",
+            checkboxInput(
+              inputId = "integration_harmony",
+              label = "Integration (Harmony)",
+              value = ifelse(!is.null(harmony_state()), harmony_state(), FALSE),
+              width = "200px"
+            ) %>% 
+              tagAppendAttributes(style = "white-space: nowrap; display: inline-flex; align-items:center;")
           ),
-          
-          # Label
-          tags$label(
-            `for` = "integration_harmony",
-            "Integration (Harmony)",
-            style = "font-weight: bold; font-size: 14px; margin:0; cursor:pointer; color: red;"
-          ),
-          
           # Tooltip
           div(
             class = "tooltip-circle",
+            style = "margin-left:10px;",
             "?",
             span(
               class = "tooltip-text",
@@ -1190,7 +1204,7 @@ server <- function(input, output, session) {
           selectInput(
             "harmony_metadata", NULL,
             choices = metadata_cols,
-            selected = metadata_cols[1],
+            selected = harmony_meta_state() %||% metadata_cols[1],
             width = "200px"
           )
         )), 
@@ -1513,13 +1527,26 @@ server <- function(input, output, session) {
       sobj <- RenameIdents(sobj, findcelltypes_result$new_labels)
       sobj$shiny_clusters <- Idents(sobj)
       Idents(sobj) <- sobj$shiny_clusters
-      sobj <- RunUMAP(
+      if(input$integration_harmony){sobj <- RunUMAP(
         sobj,
         dims = 1:input$nn_dims,
         min.dist = 0.3,
+        reduction = "harmony",
         verbose = FALSE
-      )
-      plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA:", input$nn_dims))
+      )}else{
+        sobj <- RunUMAP(
+          sobj,
+          dims = 1:input$nn_dims,
+          min.dist = 0.3,
+          reduction = "pca",
+          verbose = FALSE
+        )
+      }
+      if(harmony_state()){
+        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA:", input$nn_dims, ", Harmony"))
+      } else {
+        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA:", input$nn_dims))
+      }
       umap_plot(DimPlot(sobj, reduction = "umap", label = FALSE) + 
                   ggtitle("") +
                   theme(plot.title = element_text(face = "bold", size = 10)))
@@ -1794,8 +1821,11 @@ server <- function(input, output, session) {
       showModal(modalDialog("Updating UMAP with new min.dist...", footer = NULL, easyClose = FALSE))
       
       tryCatch({
-        title <- paste0("resolution = ", input$resolution, ", min_dist = ", input$umap_dist %||% 0.3, ", PCA:", input$nn_dims)
-        plot_title(title)
+        if(harmony_state()){
+          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA:", input$nn_dims, ", Harmony"))
+        } else {
+          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA:", input$nn_dims))
+        }
         seuratObj(RunUMAP(seuratObj(), 
                           dims = 1:input$nn_dims, 
                           min.dist = input$umap_dist, 
