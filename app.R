@@ -90,6 +90,7 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
+  # REACTIVE VALUES
   seuratObj <- reactiveVal(NULL)
   variable_method <- reactiveVal(NULL)
   resolution_search_results <- reactiveVal(NULL)
@@ -103,6 +104,8 @@ server <- function(input, output, session) {
   plot_title <- reactiveVal(NULL)
   harmony_state <- reactiveVal(NULL)
   harmony_meta_state <- reactiveVal(NULL)
+  user_nn_dims <- reactiveVal(NULL)
+  uploaded_filename <- reactiveVal(NULL)
   
   # CONTROL STEP STATUS
   status <- reactiveValues(
@@ -113,6 +116,7 @@ server <- function(input, output, session) {
     clustered = FALSE
   )
   
+
   output$data_path_input <- renderUI({
     if (is.null(seuratObj())) {
       textInput(
@@ -181,11 +185,26 @@ server <- function(input, output, session) {
   # RESET DATA
   observeEvent(input$reset_btn_ui, {
     seuratObj(NULL)
+    variable_method(NULL)
+    resolution_search_results(NULL)
+    umap_plot(NULL)
+    heatmap_plot(NULL)
+    cluster_table(NULL)
+    dotplot1_plot(NULL)
+    dotplot2_plot(NULL)
+    current_ident(NULL)
+    subset_data_path(NULL)
+    plot_title(NULL)
+    harmony_state(NULL)
+    harmony_meta_state(NULL)
+    user_nn_dims(NULL)
+    uploaded_filename(NULL)
     status$normalized <- FALSE
     status$scaled <- FALSE
     status$pca <- FALSE
     status$neighbor <- FALSE
     status$clustered <- FALSE
+    
     showNotification("Reset completed. You can now load a new dataset.", type = "message")
   })
   
@@ -213,7 +232,7 @@ server <- function(input, output, session) {
       )
     )
   })
-  
+  # SAVE DATA MODAL
   observeEvent(input$save_data_btn, {
     showModal(modalDialog(
       size = "m",
@@ -245,7 +264,7 @@ server <- function(input, output, session) {
       )
     ))
   })
-  
+  # SAVE DATA ACTION
   observeEvent(input$btn_save, {
     req(seuratObj(), input$save_path)
     save_path <- input$save_path
@@ -263,7 +282,7 @@ server <- function(input, output, session) {
       showModal(modalDialog(title = "Error", e$message, easyClose = TRUE))
     })
   })
-  
+  # DOWNLOAD DATA HANDLER
   output$downloadData <- downloadHandler(
     filename = function() {
       basename(input$save_path) %||% paste0("data_", Sys.Date(), ".rds")
@@ -448,7 +467,9 @@ server <- function(input, output, session) {
                  div(class = "tooltip-divider"),
                  div("This step performs clustering on the K-nearest neighbor graph constructed in the previous step.
                      It groups cells into clusters based on their similarities in gene expression profiles.
-                     After that, it will provide visualization for the clustering result.")
+                     After that, it will provide visualization for the clustering result. Note that the cluster data 
+                     is based on the neighbor data from the previous step. In other words, if you selected Harmony 
+                     for your neighbor data, then the cluster data will also be generated using Harmony's data.")
             )
         )
         ),
@@ -503,6 +524,7 @@ server <- function(input, output, session) {
       column(4,actionButton("normalize_btn_ui", "Normalize Data", width = "200px", class = "btn-primary")))
   })
   
+  # SCALING STEP UI
   output$scaled_data_ui <- renderUI({
     tagList(
       div(
@@ -581,18 +603,21 @@ server <- function(input, output, session) {
     )
   })
   
-
+  
+  observeEvent(input$nn_dims, {
+    user_nn_dims(input$nn_dims)
+  })
   
   # NEIGHBOR STEP UI
   output$neighbor_ui <- renderUI({ 
     req(seuratObj())
     
-    recommand_value <- if(!is.null(seuratObj()@reductions$pca)) {
+    recommend_value <- if(!is.null(seuratObj()@reductions$pca)) {
       recommended_dimensions()$recommended
     } else {
       NULL
     }
-    
+    current_value <- user_nn_dims() %||% recommend_value %||% 1
     tagList(
       if (!is.null(seuratObj()@reductions$pca) && isTRUE(status$pca)) {
         tagList(
@@ -638,7 +663,7 @@ server <- function(input, output, session) {
         div(
           style = "display: inline-block; vertical-align: middle; margin-left:10px;",
           numericInput("nn_dims", NULL,
-                       value = recommand_value,
+                       value = current_value,
                        min = 1, max = input$npc %||% 50, step = 1, width = "100%"))
       ),
       fluidRow(
@@ -648,9 +673,9 @@ server <- function(input, output, session) {
             class = "harmony-checkbox",
             checkboxInput(
               inputId = "integration_harmony",
-              label = "Integration (Harmony)",
+              label = "Harmony Integration (If you have multi sample)",
               value = ifelse(!is.null(harmony_state()), harmony_state(), FALSE),
-              width = "200px"
+              width = "350px"
             ) %>% 
               tagAppendAttributes(style = "white-space: nowrap; display: inline-flex; align-items:center;")
           ),
@@ -683,6 +708,11 @@ server <- function(input, output, session) {
       )
     )
     })
+  
+  observeEvent(input$upload_excel, {
+    req(input$upload_excel)
+    uploaded_filename(input$upload_excel$name)
+  })
   
   # CLUSTERING STEP UI
   output$clustering_ui <- renderUI({ 
@@ -724,7 +754,11 @@ server <- function(input, output, session) {
                    fileInput("upload_excel", NULL,
                              accept = c(".xlsx", ".xls"),
                              buttonLabel = "Select File...",
-                             placeholder = "No file selected, Using default",
+                             placeholder = if (is.null(uploaded_filename())) {
+                               "No file selected, Using default"
+                             } else {
+                               paste("Selected:", uploaded_filename())
+                             },
                              width = "330px")
                  )
                ),
@@ -756,7 +790,7 @@ server <- function(input, output, session) {
                        style = "display: inline-block; vertical-align: middle; margin-left:20px;",
                        h5("Start :", style = "font-weight: bold; display: inline-block; margin-right:8px;"),
                        numericInput("start_resolution", NULL, 
-                                    value = 0.01, min = 0, max = 5.0, step = 0.01, width = "100px")
+                                    value = 0.01, min = 0.0001, max = 5.0, step = 0.0001, width = "100px")
                      ),
                      div(
                        style = "display: inline-block; vertical-align: middle; margin-left:20px;",
@@ -825,6 +859,7 @@ server <- function(input, output, session) {
     )
   })
   
+  # RESOLUTION INPUT UI
   output$resolution_ui <- renderUI({
     numericInput("resolution", NULL, 
                  value = isolate(input$resolution) %||% 0.03, 
@@ -871,6 +906,7 @@ server <- function(input, output, session) {
     ))
   })
   
+  # SCC JOB MODAL
   observeEvent(input$search_on_scc, {
     showModal(
       modalDialog(
@@ -897,7 +933,7 @@ server <- function(input, output, session) {
         textInput(
           "scc_project_name", 
           "Project name:", 
-          placeholder = "e.g., My_SingleCell_Project"
+          placeholder = "e.g., wax-es"
         ),
         
         # Runtime (hours) + number of cores
@@ -942,6 +978,7 @@ server <- function(input, output, session) {
     )
   })
   
+  # SUBMIT SCC JOB ACTION
   observeEvent(input$run_scc_job, {
     req(seuratObj(), input$scc_save_path, input$scc_project_name, input$scc_runtime, input$scc_cores, input$start_resolution, input$step_resolution, input$end_resolution)
     
@@ -949,30 +986,58 @@ server <- function(input, output, session) {
       title = "Please wait",
       tagList(
         p("Submitting SCC job..."),
-        p("You will receive an email when the job is completed.")
+        p("Don't close the window." )
       ),
       footer = NULL,
       easyClose = FALSE
     ))
-    
-  
-    
+    marker_path <- if (!is.null(input$upload_excel)) {
+      input$upload_excel$datapath
+    } else {
+      NULL
+    }
     tryCatch({
       # Call function to submit SCC job
       source("/projectnb/wax-es/00_shinyapp/Clustering/Clustering_shinyapp/scc_job_submission.R")
-      submit_scc_job(
+      qsub_job_number <- submit_scc_job(
         seuratObj(),
         save_path = input$scc_save_path,
         project_name = input$scc_project_name,
         start_resolution = input$start_resolution,
         step_resolution = input$step_resolution,
         end_resolution = input$end_resolution,
+        integration_harmony = input$integration_harmony,
+        nn_dims = user_nn_dims() %||% recommended_dimensions()$recommended,
         runtime = input$scc_runtime,
         cores = input$scc_cores,
-        email = input$scc_email
+        email = input$scc_email,
+        marker_path = marker_path
+      )
+      removeModal()
+      showModal(
+        modalDialog(
+          title = "Clustering Visualization Job Submitted",
+          tagList(
+            p("The Clustering analysis is now running in the background."),
+            p("Your job ID is:"),
+            tags$pre(style = "color: red; user-select: text;", qsub_job_number),
+            p("You can copy the following command in the SCC terminal to check the job status:"),
+            tags$pre(style = "color: red; user-select: text;", paste0("qstat -j ", qsub_job_number)),
+            p("You can now close the shinyapp and wait for the results."),
+            p("For subsequent analysis, it is recommended to use the following path of seurat rds file as input:"),
+            tags$pre(style = "color: blue; user-select: text;", 
+                     file.path(input$scc_save_path, "input_seurat_file.rds")),
+            if (nchar(input$scc_email) > 0) {
+              p("The results will be sent to your email address: ", input$scc_email)
+            } else {
+              NULL
+            }
+          ),
+          footer = modalButton("Close"),
+          easyClose = TRUE
+        )
       )
       
-      removeModal()
       showNotification("SCC job submitted successfully.", type = "message")
     }, error = function(e) {
       removeModal()
@@ -980,7 +1045,7 @@ server <- function(input, output, session) {
     })
   })
   
-                 
+  # RENAME IDENTS SERVER               
   observeEvent(input$rename_idents_btn,{
     req(seuratObj(), input$rename_idents_input)
     current_ident <- current_ident()
@@ -1031,6 +1096,7 @@ server <- function(input, output, session) {
     })
   })
   
+  # SCALING STEP SERVER
   observeEvent(input$scaling_btn_ui,{
     req(seuratObj())
     showModal(modalDialog(title = "Please wait", 
@@ -1128,7 +1194,7 @@ server <- function(input, output, session) {
       cumulative_var = cumulative_var
     )
   })
-  
+  # DISPLAY RECOMMENDATION RESULTS
   output$elbow_point <- renderText({
     rec <- recommended_dimensions()
     paste0(rec$elbow_point, " PCs")
@@ -1182,9 +1248,16 @@ server <- function(input, output, session) {
         plot.subtitle = element_text(hjust = 0.5, color = "red", size = 11)
       )
   })
-  
+  # HARMONY INTEGRATION VALUE UPDATE
   observeEvent(input$integration_harmony, {
     harmony_state(input$integration_harmony)
+  })
+  observeEvent(seuratObj(), {
+    obj <- seuratObj()
+    has_harmony <- "harmony" %in% names(obj@reductions)
+    if (is.null(harmony_state())) {
+      harmony_state(has_harmony)
+    }
   })
   
   observeEvent(input$harmony_metadata, {
@@ -1216,8 +1289,7 @@ server <- function(input, output, session) {
     )
   })
   
-  
-  
+  # Harmony metadata preview
   output$harmony_metadata_preview <- renderText({
     req(input$harmony_metadata, seuratObj())
     vals <- seuratObj()@meta.data[[input$harmony_metadata]]
@@ -1276,50 +1348,57 @@ server <- function(input, output, session) {
     tryCatch({
       sobj <- seuratObj()
       sobj <- FindClusters(sobj, resolution = input$resolution, verbose = FALSE)
-      
+      Idents(sobj) <- factor(Idents(sobj), 
+                             levels = sort(as.numeric(levels(Idents(sobj)))))
       # Annotate clusters if gene markers provided
       FindCellTypesByMarkers <- function(sobj, biomarkers = NULL) {
-        
-        if(is.null(biomarkers)) {
-          stop("parameter biomarkers should be specied (now NULL)")
+        if (is.null(biomarkers)) {
+          stop("parameter biomarkers should be specified (now NULL)")
         }
         
         DefaultAssay(sobj) <- "RNA"
         
-        tmp <- map_dfr(names(biomarkers), function(name) {
-          mm <- FindAllMarkers(sobj,features = biomarkers[[name]] ,logfc.threshold = -Inf, min.pct = 0.0) 
-          
-          if (is_empty(mm)){
-            mm <- tibble(pval = 1, 
-                         avg_log2FC = 0, 
-                         pct.1 = 0, 
-                         pct.2 = 0, 
-                         p_val_adj = 1,
-                         cluster = as.factor(0), 
-                         gene = biomarkers[[name]][1])
-          }
-          mm %>% 
-            group_by(cluster) %>% 
-            summarise(score = mean(avg_log2FC)) %>%
-            mutate(celltype = name)
-        }) 
+        clusters <- levels(sobj)
+        all_genes <- unique(unlist(biomarkers))
         
-        tmp <- left_join(tmp %>% tidyr::expand(cluster, celltype), tmp) %>%
+        fc_all <- map_dfr(clusters, function(clust) {
+          fc <- tryCatch({
+            FoldChange(sobj, ident.1 = clust, features = all_genes, assay = "RNA", slot = "data")
+          }, error = function(e) {
+            data.frame(avg_log2FC = rep(NA_real_, length(all_genes)), row.names = all_genes)
+          })
+          
+          fc_df <- as.data.frame(fc)
+          fc_df$gene <- rownames(fc_df)
+          fc_df$cluster <- clust
+          fc_df[, c("cluster", "gene", "avg_log2FC")]
+        })
+        
+        scores <- map_dfr(names(biomarkers), function(celltype) {
+          genes <- biomarkers[[celltype]]
+          tmp <- fc_all %>%
+            filter(gene %in% genes) %>%
+            group_by(cluster) %>%
+            summarise(score = mean(avg_log2FC, na.rm = TRUE)) %>%
+            mutate(celltype = celltype)
+          tmp
+        })
+        
+        scores <- left_join(tidyr::expand(scores, cluster, celltype), scores, by = join_by(cluster, celltype)) %>%
           mutate(score = coalesce(score, 0))
         
-        labels <- tmp %>% 
+        labels <- scores %>%
           group_by(cluster) %>%
-          summarise(prediction = ifelse(score[which.max(score)]> 0, celltype[which.max(score)], "Unknown" )) %>% 
-          ungroup() %>% 
-          mutate(prediction = paste0(prediction,"(",cluster,")"))
+          summarise(prediction = ifelse(max(score) > 0, celltype[which.max(score)], "Unknown")) %>%
+          ungroup() %>%
+          mutate(prediction = paste0(prediction, "(", cluster, ")"))
         
         new_labels <- labels$prediction
         names(new_labels) <- labels$cluster
         
-        ## swap names and values
         old_labels <- setNames(names(new_labels), new_labels)
         
-        list(new_labels = new_labels, old_labels = old_labels, heatmap_table = tmp)   
+        list(new_labels = new_labels, old_labels = old_labels, heatmap_table = scores)
       }
       
       # Convert Excel to Marker List
@@ -1366,7 +1445,10 @@ server <- function(input, output, session) {
       # Create Heatmap Function
       CreateCellTypesHeatmap <- function(df, labels_text_size = 6, xaxis_text_size = 12, yaxis_text_size = 12, rotate_x = FALSE){
         
-        df$cluster <- factor(df$cluster, levels = sort(unique(df$cluster),TRUE), ordered = TRUE)
+        clusters_numeric <- sort(as.numeric(unique(df$cluster)))
+        df$cluster <- factor(df$cluster, 
+                             levels = as.character(clusters_numeric),
+                             ordered = TRUE)
         
         tmp <- ggplot(df, aes(x = celltype, y = as.factor(cluster))) +
           geom_tile(aes(fill = score),color= "gray50",size = 0.1)+
@@ -1418,7 +1500,10 @@ server <- function(input, output, session) {
           mutate(avg_exp_scaled = scale(avg_exp)[,1]) %>%
           ungroup()
         
-        results$cluster <- factor(results$cluster, levels = sort(unique(results$cluster),TRUE), ordered = TRUE)
+        clusters_numeric <- sort(as.numeric(unique(results$cluster)))
+        results$cluster <- factor(results$cluster, 
+                                  levels = as.character(clusters_numeric),
+                                  ordered = TRUE)
         
         gene_groups <- data.frame()
         for(group_name in names(gene_list)) {
@@ -1543,13 +1628,15 @@ server <- function(input, output, session) {
         )
       }
       if(harmony_state()){
-        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA:", input$nn_dims, ", Harmony"))
+        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA: ", input$nn_dims, ", Harmony"))
       } else {
-        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA:", input$nn_dims))
+        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA: ", input$nn_dims))
       }
       umap_plot(DimPlot(sobj, reduction = "umap", label = FALSE) + 
                   ggtitle("") +
-                  theme(plot.title = element_text(face = "bold", size = 10)))
+                  theme(plot.title = element_text(face = "bold", size = 10))+
+                  guides(color = guide_legend(ncol = 1, 
+                                              override.aes = list(size = 3))))
       seuratObj(sobj)
       status$normalized <- TRUE
       status$scaled <- TRUE
@@ -1599,12 +1686,14 @@ server <- function(input, output, session) {
     )
   )
   
+  #   UMAP DISTANCE INPUT UI
   output$umap_dist_ui <- renderUI({
     numericInput("umap_dist", NULL, 
                  value = isolate(input$umap_dist) %||% 0.3, 
                  min = 0.01, max = 0.99, step = 0.01, width = "100%")
   })
   
+  # DOWNLOAD EXCEL TEMPLATE
   output$download_template <- downloadHandler(
     filename = function() {
       "Gene_Markers.xlsx"
@@ -1796,6 +1885,7 @@ server <- function(input, output, session) {
     })
   })
   
+  # SHOW SEARCH RESULT BUTTON UI AND MODAL
   output$show_search_result_ui <- renderUI({
     req(resolution_search_results())
     div(style = "display: inline-block; vertical-align: top; margin-left:10px;",
@@ -1803,6 +1893,7 @@ server <- function(input, output, session) {
                      class = "btn-info", width = "150px"))
   })
   
+  # SHOW SEARCH RESULT MODAL
   observeEvent(input$show_search_result_btn, {
     req(resolution_search_results())
     showModal(modalDialog(
@@ -1813,7 +1904,7 @@ server <- function(input, output, session) {
     ))
   })
   
-  
+  # UPDATE UMAP BUTTON
   observeEvent(input$update_umap_btn_ui, {
     req(seuratObj(), status$clustered, input$umap_dist)
     
@@ -1822,9 +1913,9 @@ server <- function(input, output, session) {
       
       tryCatch({
         if(harmony_state()){
-          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA:", input$nn_dims, ", Harmony"))
+          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA: ", input$nn_dims, ", Harmony"))
         } else {
-          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA:", input$nn_dims))
+          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA: ", input$nn_dims))
         }
         seuratObj(RunUMAP(seuratObj(), 
                           dims = 1:input$nn_dims, 
@@ -1842,11 +1933,13 @@ server <- function(input, output, session) {
     }
   })
   
+  # CLUSTER PLOTS UI
   output$cluster_umap_ui <- renderPlot({
     req(!is.null(umap_plot()))
     umap_plot()
   })
   
+  # CLUSTER SUMMARY TABLE UI
   output$cluster_table_ui <- renderTable({
     req(seuratObj())
     get_cluster_summary_table <- function(seurat_obj) {
@@ -1888,6 +1981,7 @@ server <- function(input, output, session) {
   colnames = TRUE
   )
   
+  # CLUSTER HEATMAP UI
   output$cluster_heatmap_ui <- renderPlot({
     req(!is.null(heatmap_plot()))
     heatmap_plot()
@@ -2066,6 +2160,7 @@ server <- function(input, output, session) {
     }
   )
   
+  # SAMPLE SUBSET AND RENAME UI
   output$sample_subset_rename_ui <- renderUI({
     req(seuratObj())
     vals <- unique(Idents(seuratObj()))
@@ -2097,7 +2192,7 @@ server <- function(input, output, session) {
     )
   })
   
-  
+  # RENAMING BUTTON
   observeEvent(input$rename_btn_ui,{
     req(seuratObj())
     seurat_object <- seuratObj()
@@ -2143,6 +2238,7 @@ server <- function(input, output, session) {
     })
   })
   
+  # SUBSET BUTTON
   observeEvent(input$subset_btn_ui, {
     showModal(
       modalDialog(
@@ -2162,6 +2258,7 @@ server <- function(input, output, session) {
     )
   })
   
+  # KEEP ANALYSIS BUTTON
   observeEvent(input$keep_analysis, {
     showModal(
       modalDialog(
@@ -2181,6 +2278,7 @@ server <- function(input, output, session) {
     )
   })
   
+  # CONFIRM SUBSET BUTTON
   observeEvent(input$confirm_subset, {
     req(seuratObj())
     showModal(
@@ -2221,6 +2319,7 @@ server <- function(input, output, session) {
     })
   })
   
+  # CONFIRM KEEP ANALYSIS BUTTON
   observeEvent(input$confirm_keep_analysis, {
     req(seuratObj())
     tryCatch({
@@ -2244,6 +2343,8 @@ server <- function(input, output, session) {
       plot_title(NULL)
       harmony_state(NULL)
       harmony_meta_state(NULL)
+      user_nn_dims(NULL)
+      uploaded_filename(NULL)
       shinyjs::runjs("location.reload();")
       removeModal()
     }, error = function(e) {
