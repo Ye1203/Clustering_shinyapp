@@ -796,13 +796,13 @@ server <- function(input, output, session) {
                        style = "display: inline-block; vertical-align: middle; margin-left:20px;",
                        h5("Step :", style = "font-weight: bold; display: inline-block; margin-right:8px;"),
                        numericInput("step_resolution", NULL, 
-                                    value = 0.01, min = 0.001, max = 1, step = 0.001, width = "100px")
+                                    value = 0.001, min = 1e-10, max = 1, step = 0.001, width = "100px")
                      ),
                      div(
                        style = "display: inline-block; vertical-align: middle; margin-left:20px;",
                        h5("End :", style = "font-weight: bold; display: inline-block; margin-right:8px;"),
                        numericInput("end_resolution", NULL, 
-                                    value = 1, min = 0, max = 5.0, step = 0.01, width = "100px")
+                                    value = 0.5, min = 0, max = 5.0, step = 0.01, width = "100px")
                      ),
                      div(
                        style = "display: inline-block; vertical-align: middle; margin-left:30px;",
@@ -862,7 +862,7 @@ server <- function(input, output, session) {
   # RESOLUTION INPUT UI
   output$resolution_ui <- renderUI({
     numericInput("resolution", NULL, 
-                 value = isolate(input$resolution) %||% 0.03, 
+                 value = input$resolution %||% 0.03, 
                  min = 0.01, max = 5.0, step = 0.001, width = "100%")
   })
   
@@ -953,7 +953,9 @@ server <- function(input, output, session) {
             numericInput(
               "scc_cores",
               "Number of cores:",
-              value = 8,
+              value = if(length(seq(input$step_resolution, input$end_resolution, by = input$step_resolution)) <= 10) {
+                1
+              }else{8},
               min = 1,
               step = 1
             )
@@ -994,7 +996,7 @@ server <- function(input, output, session) {
     marker_path <- if (!is.null(input$upload_excel)) {
       input$upload_excel$datapath
     } else {
-      NULL
+      "/projectnb/wax-es/00_shinyapp/Clustering/Clustering_shinyapp/Gene_Markers.xlsx"
     }
     tryCatch({
       # Call function to submit SCC job
@@ -1316,10 +1318,14 @@ server <- function(input, output, session) {
         seuratObj <- RunHarmony(seuratObj(), group.by.vars = input$harmony_metadata, reduction.use = "pca",
                                 dims.use = 1:input$npc, assay.use = "RNA", reduction.save = "harmony", 
                                 project.dim = TRUE, verbose = FALSE)
-        seuratObj(FindNeighbors(seuratObj, reduction = "harmony", dims = 1:input$nn_dims, verbose = FALSE))
+        seuratObj <- FindNeighbors(seuratObj, reduction = "harmony", dims = 1:input$nn_dims, verbose = FALSE)
+        seuratObj <- RunUMAP(seuratObj, min.dist = 0.3, dims = 1:input$nn_dims, reduction = "harmony", verbose = FALSE)
       } else {
-        seuratObj(FindNeighbors(seuratObj(), reduction = "pca", dims = 1:input$nn_dims, verbose = FALSE))
+        seuratObj <- FindNeighbors(seuratObj(), reduction = "pca", dims = 1:input$nn_dims, verbose = FALSE)
+        seuratObj <- RunUMAP(seuratObj, min.dist = 0.3, dims = 1:input$nn_dims, reduction = "pca", verbose = FALSE)
       }
+      seuratObj(seuratObj)
+      
       updateCheckboxInput(session, "integration_harmony",
                           value = harmony_state())
       updateSelectInput(session, "harmony_metadata",
@@ -1445,7 +1451,7 @@ server <- function(input, output, session) {
       # Create Heatmap Function
       CreateCellTypesHeatmap <- function(df, labels_text_size = 6, xaxis_text_size = 12, yaxis_text_size = 12, rotate_x = FALSE){
         
-        clusters_numeric <- sort(as.numeric(unique(df$cluster)))
+        clusters_numeric <- sort(as.numeric(unique(df$cluster)), decreasing = TRUE)
         df$cluster <- factor(df$cluster, 
                              levels = as.character(clusters_numeric),
                              ordered = TRUE)
@@ -1500,7 +1506,7 @@ server <- function(input, output, session) {
           mutate(avg_exp_scaled = scale(avg_exp)[,1]) %>%
           ungroup()
         
-        clusters_numeric <- sort(as.numeric(unique(results$cluster)))
+        clusters_numeric <- sort(as.numeric(unique(results$cluster)), decreasing = TRUE)
         results$cluster <- factor(results$cluster, 
                                   levels = as.character(clusters_numeric),
                                   ordered = TRUE)
@@ -1612,26 +1618,23 @@ server <- function(input, output, session) {
       sobj <- RenameIdents(sobj, findcelltypes_result$new_labels)
       sobj$shiny_clusters <- Idents(sobj)
       Idents(sobj) <- sobj$shiny_clusters
-      if(input$integration_harmony){sobj <- RunUMAP(
-        sobj,
-        dims = 1:input$nn_dims,
-        min.dist = 0.3,
-        reduction = "harmony",
-        verbose = FALSE
-      )}else{
-        sobj <- RunUMAP(
-          sobj,
-          dims = 1:input$nn_dims,
-          min.dist = 0.3,
-          reduction = "pca",
-          verbose = FALSE
-        )
-      }
-      if(harmony_state()){
-        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA: ", input$nn_dims, ", Harmony"))
+
+      base_name <- if (is.null(subset_data_path())) {
+        paste0("Subset: ", file_path_sans_ext(basename(input$data_path)))
       } else {
-        plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", 0.3, ", PCA: ", input$nn_dims))
+        file_path_sans_ext(basename(subset_data_path()))
       }
+      
+      title <- paste0(
+        base_name,
+        ", resolution: ", input$resolution,
+        ", min_dist: ", 0.3,
+        ", PCA: ", input$nn_dims,
+        if (harmony_state()) ", Harmony" else ""
+      )
+      
+      plot_title(title)
+      
       umap_plot(DimPlot(sobj, reduction = "umap", label = FALSE) + 
                   ggtitle("") +
                   theme(plot.title = element_text(face = "bold", size = 10))+
@@ -1912,11 +1915,21 @@ server <- function(input, output, session) {
       showModal(modalDialog("Updating UMAP with new min.dist...", footer = NULL, easyClose = FALSE))
       
       tryCatch({
-        if(harmony_state()){
-          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA: ", input$nn_dims, ", Harmony"))
+        base_name <- if (is.null(subset_data_path())) {
+          paste0("Subset: ", file_path_sans_ext(basename(input$data_path)))
         } else {
-          plot_title(paste0("resolution: ", input$resolution, ", min_dist: ", input$umap_dist %||% 0.3, ", PCA: ", input$nn_dims))
+          file_path_sans_ext(basename(subset_data_path()))
         }
+        
+        title <- paste0(
+          base_name,
+          ", resolution: ", input$resolution,
+          ", min_dist: ", input$umap_dist %||% 0.3,
+          ", PCA: ", input$nn_dims,
+          if (harmony_state()) ", Harmony" else ""
+        )
+        
+        plot_title(title)
         seuratObj(RunUMAP(seuratObj(), 
                           dims = 1:input$nn_dims, 
                           min.dist = input$umap_dist, 
@@ -2077,7 +2090,7 @@ server <- function(input, output, session) {
             table_data,
             rows = NULL,
             theme = gridExtra::ttheme_minimal(
-              base_size = 8,
+              base_size = 10,
               padding = unit(c(2, 2), "mm")
             )
           )
