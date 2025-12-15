@@ -1364,10 +1364,10 @@ server <- function(input, output, session) {
         
         DefaultAssay(sobj) <- "RNA"
         
-        clusters <- levels(sobj)
+        clusters <- levels(Idents(sobj))
         all_genes <- unique(unlist(biomarkers))
         
-        fc_all <- map_dfr(clusters, function(clust) {
+        fc_all <- purrr::map_dfr(clusters, function(clust) {
           fc <- tryCatch({
             FoldChange(sobj, ident.1 = clust, features = all_genes, assay = "RNA", slot = "data")
           }, error = function(e) {
@@ -1380,7 +1380,7 @@ server <- function(input, output, session) {
           fc_df[, c("cluster", "gene", "avg_log2FC")]
         })
         
-        scores <- map_dfr(names(biomarkers), function(celltype) {
+        scores <- purrr::map_dfr(names(biomarkers), function(celltype) {
           genes <- biomarkers[[celltype]]
           tmp <- fc_all %>%
             filter(gene %in% genes) %>%
@@ -1444,7 +1444,8 @@ server <- function(input, output, session) {
           return(biomarkers)
           
         }, error = function(e) {
-          stop(paste("❌ Failed to convert Excel to marker list. Please check Excel format.\nDetails:", e$message))
+          stop(paste("Failed to convert Excel to marker list. Please check Excel format.
+Details:", e$message))
         })
       }
       
@@ -1457,11 +1458,11 @@ server <- function(input, output, session) {
                              ordered = TRUE)
         
         tmp <- ggplot(df, aes(x = celltype, y = as.factor(cluster))) +
-          geom_tile(aes(fill = score),color= "gray50",size = 0.1)+
-          scale_fill_gradient2(low = "blue", mid="white", high = "tomato")+
-          geom_text(aes(label=round(score,1)), size = labels_text_size)+
+          geom_raster(aes(fill = score))+
+          scale_fill_gradient2(low = "blue", mid="white", high = "tomato") +
+          geom_text(aes(label=round(score,1)), size = labels_text_size) +
           scale_x_discrete(position = "top") +
-          ylab("Clusters")+
+          ylab("Clusters") +
           theme_minimal() +
           theme(legend.title = element_blank(),
                 legend.position = "bottom",
@@ -1470,19 +1471,19 @@ server <- function(input, output, session) {
           coord_fixed()
         
         if (rotate_x){
-          # tmp <- tmp+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,color = "black", size = xaxis_text_size))
-          tmp <- tmp+theme(axis.text.x = element_text(angle = 90, hjust=0, color = "black", size = xaxis_text_size),
-                           axis.text.x.top = element_text(vjust = 0.5))
+          tmp <- tmp + theme(axis.text.x = element_text(angle = 90, hjust=0, color = "black", size = xaxis_text_size),
+                             axis.text.x.top = element_text(vjust = 0.5))
         }
         tmp
       }
       
-      custom_dotplot <- function(seurat_obj, gene_list, assay = "RNA", title = "", cols = c("lightgrey", "blue")) {
+      custom_dotplot <- function(seurat_obj, gene_list, assay = "RNA", title = NULL, cols = c("lightgrey", "blue")) {
         
         all_genes <- unlist(gene_list, use.names = FALSE)
         DefaultAssay(seurat_obj) <- assay
         clusters <- unique(Idents(seurat_obj))
         results <- data.frame()
+        
         for(cluster in clusters) {
           cluster_cells <- WhichCells(seurat_obj, idents = cluster)
           cluster_data <- GetAssayData(seurat_obj, assay = assay, slot = "data")[all_genes, cluster_cells, drop = FALSE]
@@ -1528,7 +1529,7 @@ server <- function(input, output, session) {
         p <- ggplot(results, aes(x = gene, y = cluster)) +
           geom_point(aes(size = pct_exp, color = avg_exp_scaled)) +
           scale_color_gradientn(
-            colors = c("lightgrey", "blue"),
+            colors = cols,
             name = "Avg Exp",
             guide = guide_colorbar(barwidth = 5, barheight = 0.5)
           ) +
@@ -1545,9 +1546,9 @@ server <- function(input, output, session) {
               angle = 90, 
               hjust = 1, 
               vjust = 0.5,
-              size = 8
+              size = 12
             ),
-            axis.text.y = element_text(size = 10),
+            axis.text.y = element_text(size = 12),
             axis.title.x = element_blank(),
             axis.title.y = element_blank(),
             legend.direction = "horizontal", 
@@ -1560,10 +1561,10 @@ server <- function(input, output, session) {
             panel.grid.minor = element_blank(),  
             panel.spacing.y = unit(0.1, "lines"),  
             panel.spacing.x = unit(1, "lines"),   
-            strip.text = element_text(face = "bold", size = 9),
+            strip.text = element_text(face = "bold", size = 12),
             strip.background = element_rect(fill = "grey95", color = NA)
           ) +
-          labs(x = "Genes", y = "Clusters")
+          labs(x = "Genes", y = "Clusters", title = title)
         
         return(p)
       }
@@ -1616,6 +1617,10 @@ server <- function(input, output, session) {
       heatmap_plot(heatmap)
       
       sobj <- RenameIdents(sobj, findcelltypes_result$new_labels)
+      labs <- levels(Idents(sobj))
+      cluster_num <- as.numeric(sub(".*\\((\\d+)\\).*", "\\1", labs))
+      new_levels <- labs[order(cluster_num)]
+      Idents(sobj) <- factor(Idents(sobj), levels = new_levels)
       sobj$shiny_clusters <- Idents(sobj)
       Idents(sobj) <- sobj$shiny_clusters
 
@@ -1976,8 +1981,8 @@ server <- function(input, output, session) {
           summarise(cluster = "total",
                     ncells = sum(ncells),
                     pct = sum(pct),
-                    avg.counts = as.integer(round(mean(seuratObj()@meta.data$nCount_RNA))),
-                    avg.genes = as.integer(round(mean(seuratObj()@meta.data$nFeature_RNA))))
+                    avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
+                    avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA))))
       )
       
       return(result)
@@ -2019,9 +2024,9 @@ server <- function(input, output, session) {
     tagList(
       div(style = "display: inline-block; vertical-align: top; margin-left:30px; font-weight: bold;",fluidRow(textOutput("plot_title"))),
       fluidRow(
-        column(4,
+        column(5,
                plotOutput("cluster_umap_ui")),
-        column(3,
+        column(2,
                tags$style(HTML("
                             table {
                               border: none !important;
@@ -2081,7 +2086,7 @@ server <- function(input, output, session) {
       dotplot2_file <- file.path(temp_dir, "Cluster_Dotplot2.pdf")
       combined_file <- file.path(temp_dir, "Cluster_Combined.pdf")
       
-      create_combined_cluster_plot_patchwork <- function(umap_plot, table_data, heatmap_plot, dotplot1 = NULL, dotplot2 = NULL) {
+      create_combined_cluster_plot_patchwork <- function(umap_plot, table_data, heatmap_plot, dotplot1 = NULL, dotplot2 = NULL, resolution) {
         
         table_plot <- function(table_data) {
           if (is.null(table_data)) return(ggplot() + theme_void())
@@ -2090,7 +2095,7 @@ server <- function(input, output, session) {
             table_data,
             rows = NULL,
             theme = gridExtra::ttheme_minimal(
-              base_size = 10,
+              base_size = 12,
               padding = unit(c(2, 2), "mm")
             )
           )
@@ -2101,15 +2106,20 @@ server <- function(input, output, session) {
             theme(plot.margin = margin(5, 5, 5, 5))
         }
         
-        title_text <- input$title_for_download %||% "Cluster Plots"
+        cluster_n <- sum(table_data$cluster != "total", na.rm = TRUE)
+        title_text <- sprintf(
+          "Resolution: %.2f, Cluster Number: %d",
+          as.numeric(resolution),
+          as.integer(cluster_n)
+        )
         top_row <- (umap_plot | table_plot(table_data) | heatmap_plot) + 
           plot_layout(widths = c(7, 4, 7))
+        
         title_plot <- ggplot() +
           annotate("text", x = 0.5, y = 0.5, 
                    label = title_text, 
-                   size = 10,
-                   hjust = 0.5, vjust = 0.5, 
-                   fontface = "bold") +
+                   size = 8,
+                   hjust = 0.5, vjust = 0.5) +
           theme_void() +
           theme(
             plot.margin = margin(5, 5, 5, 5),
@@ -2133,7 +2143,7 @@ server <- function(input, output, session) {
         }
         
         n_parts <- 1 + 1 + length(bottom_plots)  
-        heights <- c(0.2, 2, rep(1.5, length(bottom_plots)))
+        heights <- c(0.1, 2, rep(1.5, length(bottom_plots)))
         
         combined_plot <- combined_plot + 
           plot_layout(heights = heights[1:n_parts], ncol = 1)
@@ -2146,10 +2156,11 @@ server <- function(input, output, session) {
         cluster_table(),
         heatmap_plot(),
         dotplot1_plot(),
-        dotplot2_plot()
+        dotplot2_plot(),
+        resolution = input$resolution
       )
       
-      ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = 8)
+      ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = 6)
       ggsave(umap_file, plot = umap_plot(), width = 7, height = 8)
       ggsave(combined_file, plot = combined_plot, width = 18, height = 20)
       
