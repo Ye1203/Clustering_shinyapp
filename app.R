@@ -97,6 +97,7 @@ server <- function(input, output, session) {
   umap_plot <- reactiveVal(NULL)
   heatmap_plot <- reactiveVal(NULL)
   cluster_table <- reactiveVal(NULL)
+  table_data <- reactiveVal(NULL)
   dotplot1_plot <- reactiveVal(NULL)
   dotplot2_plot <- reactiveVal(NULL)
   current_ident <- reactiveVal(NULL)
@@ -190,6 +191,7 @@ server <- function(input, output, session) {
     umap_plot(NULL)
     heatmap_plot(NULL)
     cluster_table(NULL)
+    table_data(NULL)
     dotplot1_plot(NULL)
     dotplot2_plot(NULL)
     current_ident(NULL)
@@ -796,7 +798,7 @@ server <- function(input, output, session) {
                        style = "display: inline-block; vertical-align: middle; margin-left:20px;",
                        h5("Step :", style = "font-weight: bold; display: inline-block; margin-right:8px;"),
                        numericInput("step_resolution", NULL, 
-                                    value = 0.001, min = 1e-10, max = 1, step = 0.001, width = "100px")
+                                    value = 0.02, min = 1e-10, max = 1, step = 0.001, width = "100px")
                      ),
                      div(
                        style = "display: inline-block; vertical-align: middle; margin-left:20px;",
@@ -936,6 +938,14 @@ server <- function(input, output, session) {
           placeholder = "e.g., wax-es"
         ),
         
+        # Project name
+        textInput(
+          "scc_pca_num", 
+          "PCA number (Multiple PCAs are separated by commas(,).:", 
+          value = input$nn_dims,
+          placeholder = "e.g., 7,8,9"
+        ),
+        
         # Runtime (hours) + number of cores
         fluidRow(
           column(
@@ -1009,7 +1019,12 @@ server <- function(input, output, session) {
         step_resolution = input$step_resolution,
         end_resolution = input$end_resolution,
         integration_harmony = input$integration_harmony,
-        nn_dims = user_nn_dims() %||% recommended_dimensions()$recommended,
+        pca_num = input$scc_pca_num,
+        harmony_metadata = if (input$integration_harmony) {
+          input$harmony_metadata
+        } else {
+          NULL
+        },
         runtime = input$scc_runtime,
         cores = input$scc_cores,
         email = input$scc_email,
@@ -1316,7 +1331,7 @@ server <- function(input, output, session) {
       if(input$integration_harmony){
         req(input$harmony_metadata)
         seuratObj <- RunHarmony(seuratObj(), group.by.vars = input$harmony_metadata, reduction.use = "pca",
-                                dims.use = 1:input$npc, assay.use = "RNA", reduction.save = "harmony", 
+                                dims.use = 1:input$nn_dims, assay.use = "RNA", reduction.save = "harmony", 
                                 project.dim = TRUE, verbose = FALSE)
         seuratObj <- FindNeighbors(seuratObj, reduction = "harmony", dims = 1:input$nn_dims, verbose = FALSE)
         seuratObj <- RunUMAP(seuratObj, min.dist = 0.3, dims = 1:input$nn_dims, reduction = "harmony", verbose = FALSE)
@@ -1380,24 +1395,38 @@ server <- function(input, output, session) {
           fc_df[, c("cluster", "gene", "avg_log2FC")]
         })
         
-        scores <- purrr::map_dfr(names(biomarkers), function(celltype) {
-          genes <- biomarkers[[celltype]]
+        celltypes_ordered <- names(biomarkers)
+        
+        scores <- purrr::map_dfr(seq_along(biomarkers), function(i) {
+          celltype <- celltypes_ordered[i]
+          genes <- biomarkers[[i]]
           tmp <- fc_all %>%
             filter(gene %in% genes) %>%
             group_by(cluster) %>%
-            summarise(score = mean(avg_log2FC, na.rm = TRUE)) %>%
+            summarise(score = mean(avg_log2FC, na.rm = TRUE), .groups = "drop") %>%
             mutate(celltype = celltype)
           tmp
         })
         
-        scores <- left_join(tidyr::expand(scores, cluster, celltype), scores, by = join_by(cluster, celltype)) %>%
-          mutate(score = coalesce(score, 0))
+        scores <- scores %>%
+          mutate(
+            celltype = factor(celltype, levels = celltypes_ordered),
+            cluster = factor(cluster, levels = clusters)
+          )
+        
+        scores <- tidyr::expand(scores, cluster, celltype) %>%
+          left_join(scores, by = c("cluster", "celltype")) %>%
+          mutate(score = coalesce(score, 0)) %>%
+          arrange(cluster, celltype)
         
         labels <- scores %>%
           group_by(cluster) %>%
-          summarise(prediction = ifelse(max(score) > 0, celltype[which.max(score)], "Unknown")) %>%
-          ungroup() %>%
-          mutate(prediction = paste0(prediction, "(", cluster, ")"))
+          summarise(prediction = ifelse(max(score) > 0, as.character(celltype[which.max(score)]), "Unknown"), .groups = "drop") %>%
+          mutate(
+            prediction = paste0(prediction, "(", cluster, ")"),
+            cluster = factor(cluster, levels = clusters)
+          ) %>%
+          arrange(cluster)
         
         new_labels <- labels$prediction
         names(new_labels) <- labels$cluster
@@ -1452,8 +1481,8 @@ Details:", e$message))
       # Create Heatmap Function
       CreateCellTypesHeatmap <- function(df, labels_text_size = 6, xaxis_text_size = 12, yaxis_text_size = 12, rotate_x = FALSE){
         
-        clusters_numeric <- sort(as.numeric(unique(df$cluster)), decreasing = TRUE)
-        df$cluster <- factor(df$cluster, 
+        clusters_numeric <- sort(as.numeric(levels(df$cluster)), decreasing = TRUE)
+        df$cluster <- factor(df$cluster,
                              levels = as.character(clusters_numeric),
                              ordered = TRUE)
         
@@ -1624,10 +1653,10 @@ Details:", e$message))
       sobj$shiny_clusters <- Idents(sobj)
       Idents(sobj) <- sobj$shiny_clusters
 
-      base_name <- if (is.null(subset_data_path())) {
-        paste0("Subset: ", file_path_sans_ext(basename(input$data_path)))
+      base_name <- if (!is.null(subset_data_path())) {
+        paste0("Subset: ", file_path_sans_ext(basename(subset_data_path())))
       } else {
-        file_path_sans_ext(basename(subset_data_path()))
+        file_path_sans_ext(basename(input$data_path))
       }
       
       title <- paste0(
@@ -1697,7 +1726,7 @@ Details:", e$message))
   #   UMAP DISTANCE INPUT UI
   output$umap_dist_ui <- renderUI({
     numericInput("umap_dist", NULL, 
-                 value = isolate(input$umap_dist) %||% 0.3, 
+                 value = input$umap_dist %||% 0.3, 
                  min = 0.01, max = 0.99, step = 0.01, width = "100%")
   })
   
@@ -1920,10 +1949,10 @@ Details:", e$message))
       showModal(modalDialog("Updating UMAP with new min.dist...", footer = NULL, easyClose = FALSE))
       
       tryCatch({
-        base_name <- if (is.null(subset_data_path())) {
-          paste0("Subset: ", file_path_sans_ext(basename(input$data_path)))
+        base_name <- if (!is.null(subset_data_path())) {
+          paste0("Subset: ", file_path_sans_ext(basename(subset_data_path())))
         } else {
-          file_path_sans_ext(basename(subset_data_path()))
+          file_path_sans_ext(basename(input$data_path))
         }
         
         title <- paste0(
@@ -1935,10 +1964,19 @@ Details:", e$message))
         )
         
         plot_title(title)
-        seuratObj(RunUMAP(seuratObj(), 
-                          dims = 1:input$nn_dims, 
-                          min.dist = input$umap_dist, 
-                          verbose = FALSE))
+        if(harmony_state()){
+          seuratObj(RunUMAP(seuratObj(), 
+                            dims = 1:input$nn_dims, 
+                            min.dist = input$umap_dist, 
+                            reduction = "harmony",
+                            verbose = FALSE))
+        } else {
+          seuratObj(RunUMAP(seuratObj(), 
+                            dims = 1:input$nn_dims, 
+                            min.dist = input$umap_dist, 
+                            reduction = "pca",
+                            verbose = FALSE))
+        }
         umap_plot(DimPlot(seuratObj(), reduction = "umap", label = FALSE) + 
                     ggtitle("") +
                     theme(plot.title = element_text(face = "bold", size = 10)))
@@ -1958,15 +1996,18 @@ Details:", e$message))
   })
   
   # CLUSTER SUMMARY TABLE UI
-  output$cluster_table_ui <- renderTable({
+  output$cluster_table_ui <- renderPlot({
     req(seuratObj())
+    
     get_cluster_summary_table <- function(seurat_obj) {
       all_cells <- seurat_obj@meta.data %>%
         select(seurat_clusters, counts = nCount_RNA, genes = nFeature_RNA) %>%
         group_by(seurat_clusters) %>%
-        summarise(ncells = n(),
-                  avg.counts = as.integer(round(mean(counts))), 
-                  avg.genes = as.integer(round(mean(genes)))) %>%  
+        summarise(
+          ncells = n(),
+          avg.counts = as.integer(round(mean(counts))),
+          avg.genes = as.integer(round(mean(genes)))
+        ) %>%
         ungroup()
       
       result <- all_cells %>%
@@ -1978,26 +2019,40 @@ Details:", e$message))
       result <- bind_rows(
         result,
         result %>%
-          summarise(cluster = "total",
-                    ncells = sum(ncells),
-                    pct = sum(pct),
-                    avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
-                    avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA))))
+          summarise(
+            cluster = "total",
+            ncells = sum(ncells),
+            pct = sum(pct),
+            avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
+            avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA)))
+          )
       )
       
       return(result)
     }
-    cluster_table(get_cluster_summary_table(seuratObj()))
-    cluster_table()
-  }, 
-  align = 'c',
-  bordered = FALSE,
-  striped = FALSE,
-  hover = FALSE,
-  width = 'auto',
-  rownames = FALSE,
-  colnames = TRUE
-  )
+    
+    df <- get_cluster_summary_table(seuratObj())
+    
+    colnames(df) <- c("cluster", "ncell", "pct", "avg.counts", "avg.genes")
+    tg <- gridExtra::tableGrob(
+      df,
+      rows = NULL,
+      theme = gridExtra::ttheme_minimal(
+        base_size = 10,
+        padding = grid::unit(c(3, 3), "mm"),
+        core = list(
+          fg_params = list(hjust = 0.5, x = 0.5)
+        ),
+        colhead = list(
+          fg_params = list(fontface = "bold", hjust = 0.5, x = 0.5)
+        )
+      )
+    )
+    table_data(df)
+    grid::grid.newpage()
+    grid::grid.draw(tg)
+  })
+  
   
   # CLUSTER HEATMAP UI
   output$cluster_heatmap_ui <- renderPlot({
@@ -2024,26 +2079,12 @@ Details:", e$message))
     tagList(
       div(style = "display: inline-block; vertical-align: top; margin-left:30px; font-weight: bold;",fluidRow(textOutput("plot_title"))),
       fluidRow(
+        column(4,
+               plotOutput("cluster_umap_ui", height = "400px")),
+        column(3,
+               plotOutput("cluster_table_ui", height = "400px")),
         column(5,
-               plotOutput("cluster_umap_ui")),
-        column(2,
-               tags$style(HTML("
-                            table {
-                              border: none !important;
-                              font-size: 12px !important;
-                            }
-                            table th, table td {
-                              border: none !important;
-                              font-size: 12px !important;
-                            }
-                            table tr {
-                              border: none !important;
-                            }
-                          ")),
-               tableOutput("cluster_table_ui")
-        ),
-        column(5,
-               plotOutput("cluster_heatmap_ui"))
+               plotOutput("cluster_heatmap_ui", height = "400px"))
       ),
       hr(),
       fluidRow( 
@@ -2107,17 +2148,12 @@ Details:", e$message))
         }
         
         cluster_n <- sum(table_data$cluster != "total", na.rm = TRUE)
-        title_text <- sprintf(
-          "Resolution: %.2f, Cluster Number: %d",
-          as.numeric(resolution),
-          as.integer(cluster_n)
-        )
         top_row <- (umap_plot | table_plot(table_data) | heatmap_plot) + 
           plot_layout(widths = c(7, 4, 7))
         
         title_plot <- ggplot() +
           annotate("text", x = 0.5, y = 0.5, 
-                   label = title_text, 
+                   label = input$title_for_download %||% plot_title(),
                    size = 8,
                    hjust = 0.5, vjust = 0.5) +
           theme_void() +
@@ -2143,7 +2179,7 @@ Details:", e$message))
         }
         
         n_parts <- 1 + 1 + length(bottom_plots)  
-        heights <- c(0.1, 2, rep(1.5, length(bottom_plots)))
+        heights <- c(0.15, 2, rep(1.5, length(bottom_plots)))
         
         combined_plot <- combined_plot + 
           plot_layout(heights = heights[1:n_parts], ncol = 1)
@@ -2153,14 +2189,14 @@ Details:", e$message))
       
       combined_plot <- create_combined_cluster_plot_patchwork(
         umap_plot(),
-        cluster_table(),
+        table_data(),
         heatmap_plot(),
         dotplot1_plot(),
         dotplot2_plot(),
         resolution = input$resolution
       )
       
-      ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = 6)
+      ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = 8)
       ggsave(umap_file, plot = umap_plot(), width = 7, height = 8)
       ggsave(combined_file, plot = combined_plot, width = 18, height = 20)
       
@@ -2360,6 +2396,7 @@ Details:", e$message))
       umap_plot(NULL)
       heatmap_plot(NULL)
       cluster_table(NULL)
+      table_data(NULL)
       dotplot1_plot(NULL)
       dotplot2_plot(NULL)
       current_ident(NULL)
