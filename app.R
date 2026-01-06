@@ -22,6 +22,28 @@ ui <- fluidPage(
       margin-left: 4px;
     }
   ")),
+      tags$style(HTML("
+    .dimplot-modal {
+      padding: 0;
+    }
+
+    .dimplot-modal {
+      width: 100%;
+    }
+
+    .dimplot-modal {
+      max-width: 100%;
+    }
+
+    .modal-dialog.modal-xl:has(.dimplot-modal) {
+      width: 80% !important;
+      max-width: 80% !important;
+    }
+
+    .modal-header .close {
+      display: none;
+    }
+  ")),
     tags$style(HTML("
       .tooltip-circle {
         position: relative;
@@ -522,8 +544,14 @@ server <- function(input, output, session) {
   # NORMALIZATION STEP UI
   output$normalized_data_ui <- renderUI({
     req(seuratObj())
-    fluidRow(
-      column(4,actionButton("normalize_btn_ui", "Normalize Data", width = "200px", class = "btn-primary")))
+    div(
+      style = "display: inline-block; vertical-align: middle;",
+      actionButton(
+        "normalize_btn_ui",
+        "Normalize Data",
+        width = "200px",
+        class = "btn-primary"
+      ))
   })
   
   # SCALING STEP UI
@@ -561,11 +589,14 @@ server <- function(input, output, session) {
           )
         )
       ),
-      fluidRow(
-        column(4,
-               actionButton("scaling_btn_ui", "Scale Data",
-                            width = "200px", class = "btn-primary"))
-      )
+      div(
+        style = "display: inline-block; vertical-align: middle;",
+        actionButton(
+          "scaling_btn_ui",
+          "Scale Data",
+          width = "200px",
+          class = "btn-primary"
+        ))
     )
   })
   
@@ -597,11 +628,14 @@ server <- function(input, output, session) {
           numericInput("npc", NULL, value = 30, min = 1, max = 50, step = 1, width = "100px")
         )
       ),
-      fluidRow(
-        column(4,
-               actionButton("pca_btn_ui", "Run PCA",
-                            width = "200px", class = "btn-primary"))
-      )
+      div(
+        style = "display: inline-block; vertical-align: middle;",
+        actionButton(
+          "pca_btn_ui",
+          "Run PCA",
+          width = "200px",
+          class = "btn-primary"
+        ))
     )
   })
   
@@ -703,13 +737,128 @@ server <- function(input, output, session) {
           div(
             style = "display: inline-block; vertical-align: middle; margin-left:20px;",
             uiOutput("harmony_metadata_ui"))),
+      
       fluidRow(
-        column(4,
-               actionButton("neighbor_btn_ui", "Find Neighbors",
-                            width = "200px", class = "btn-primary"))
+        div(
+          style = "display: inline-block; vertical-align: middle; margin-left: 20px;",
+          actionButton(
+            "neighbor_btn_ui",
+            "Find Neighbors",
+            width = "200px",
+            class = "btn-primary"
+          )
+        ),
+        div(
+          style = "display: inline-block; vertical-align: middle; margin-left: 20px;",
+          uiOutput("harmony_check_ui")
+        )
+      )
+      
+      )
+    })
+  
+  output$harmony_check_ui <- renderUI({
+    if (isTRUE(status$neighbor)) {
+        actionButton(
+          "open_dimplot_modal",
+          "Check Harmony Result",
+          width = "200px",
+          class = "btn-danger"
+      )
+    }
+  })
+  
+  observeEvent(input$open_dimplot_modal, {
+    
+    showModal(
+      modalDialog(
+        title = "PCA / Harmony DimPlot",
+        size = "xl",
+        easyClose = FALSE,
+        footer = NULL,
+        
+        tags$div(
+          class = "dimplot-modal",
+        fluidPage(
+          ## ===== plot =====
+          plotOutput("dimplot_modal", height = "600px"),
+          
+          hr(),
+          
+          ## ===== dims =====
+          fluidRow(
+            column(
+              4,
+              numericInput("dim1", "Dim 1: ", value = 3, min = 1)
+            ),
+            column(
+              4,
+              numericInput("dim2", "Dim 2: ", value = 4, min = 1)
+            )
+          ),
+          hr(),
+          ## ===== split.by + close =====
+          fluidRow(
+            column(
+              8,
+              selectInput(
+                "split_by",
+                "Split by (optional)",
+                choices = c(
+                  "None" = "",
+                  "orig.ident",
+                  "sample_id"
+                ),
+                selected = ""
+              )
+            ),
+            column(
+              4,
+              align = "right",
+              modalButton("Close")
+            )
+          )
+        )
       )
     )
-    })
+    )
+  })
+  
+  output$dimplot_modal <- renderPlot({
+    
+    req(input$dim1, input$dim2)
+    dims <- c(input$dim1, input$dim2)
+    
+    if (is.null(input$split_by) || input$split_by == "") {
+      
+      p_pca <- DimPlot(
+        data,
+        reduction = "pca",
+        group.by = input$harmony_metadata,
+        dims = dims
+      )
+      
+      p_harmony <- DimPlot(
+        data,
+        reduction = "harmony",
+        group.by = input$harmony_metadata,
+        dims = dims
+      )
+      
+      (p_pca + p_harmony) +
+        plot_layout(guides = "collect")
+      
+    } else {
+      
+      DimPlot(
+        data,
+        reduction = "harmony",
+        group.by = input$harmony_metadata,
+        dims = dims,
+        split.by = input$split_by
+      )
+    }
+  })
   
   observeEvent(input$upload_excel, {
     req(input$upload_excel)
@@ -845,10 +994,14 @@ server <- function(input, output, session) {
                      checkboxInput("search_resolution", "Search Resolutions", width = "100%")),
                  uiOutput("show_search_result_ui", inline = TRUE)
                  ),
-               fluidRow(
-                 column(4,
-                        actionButton("clustering_btn_ui", "Find Clusters",
-                                     width = "200px", class = "btn-primary"))
+               div(
+                 style = "display: inline-block; vertical-align: middle;",
+                 actionButton(
+                   "clustering_btn_ui",
+                   "Find Clusters",
+                   width = "200px",
+                   class = "btn-primary"
+                 )
                ),
                fluidRow(
                  column(12,

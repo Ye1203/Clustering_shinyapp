@@ -100,12 +100,12 @@ tryCatch({
     ))
   }
   
-  scale_idx <- grep("^\\$Scale", lines)
+  scale_idx <- grep("^\\\\$Scale", lines)
   if (length(scale_idx) == 0) {
     scale_used_variable_features <- NA
   } else {
     last_scale_start <- scale_idx[length(scale_idx)]
-    next_block <- grep("^\\$", lines)
+    next_block <- grep("^\\\\$", lines)
     next_block <- next_block[next_block > last_scale_start]
     last_scale_end <- if (length(next_block) > 0) min(next_block) - 1 else length(lines)
     scale_block <- lines[last_scale_start:last_scale_end]
@@ -117,20 +117,20 @@ tryCatch({
     }
   }
   
-  pca_idx <- grep("^\\$RunPCA", lines)
+  pca_idx <- grep("^\\\\$RunPCA", lines)
   if (length(pca_idx) == 0) {
     pca_npcs <- NA
   } else {
     last_pca_start <- pca_idx[length(pca_idx)]
-    next_block <- grep("^\\$", lines)
+    next_block <- grep("^\\\\$", lines)
     next_block <- next_block[next_block > last_pca_start]
     last_pca_end <- if (length(next_block) > 0) min(next_block) - 1 else length(lines)
     pca_block <- lines[last_pca_start:last_pca_end]
-    npcs_line <- pca_block[grep("npcs\\s*:", pca_block)]
+    npcs_line <- pca_block[grep("npcs\\\\s*:", pca_block)]
     pca_npcs <- if (length(npcs_line) == 0) {
       NA
     } else {
-      suppressWarnings(as.numeric(sub(".*npcs\\s*:\\s*", "", npcs_line)))
+      suppressWarnings(as.numeric(sub(".*npcs\\\\s*:\\\\s*", "", npcs_line)))
     }
   }
   
@@ -536,6 +536,7 @@ results <- future.apply::future_lapply(seq_len(nrow(resolution_index_table)), fu
   resolution <- resolution_index_table$resolution[i]
   pca        <- resolution_index_table$pca[i]
   index      <- resolution_index_table$index[i]
+  dyn.load("/projectnb/wax-es/00_shinyapp/Clustering/conda_env/lib/libicui18n.so.75")
   library(Seurat)
   library(ggplot2)
   library(dplyr)
@@ -939,9 +940,6 @@ results <- future.apply::future_lapply(seq_len(nrow(resolution_index_table)), fu
       "",
       "The cluster analysis procedure has been completed successfully.",
       paste0("Results are available in folder: ", output_file_path),
-      "",
-      "For subsequent analysis, it is recommended to use the following path of seurat rds file as input:",
-      paste0(output_file_path, "/input_seurat_file.rds"),
       "",
       "Best,",
       "Bingtian"
