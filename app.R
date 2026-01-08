@@ -129,6 +129,7 @@ server <- function(input, output, session) {
   harmony_meta_state <- reactiveVal(NULL)
   user_nn_dims <- reactiveVal(NULL)
   uploaded_filename <- reactiveVal(NULL)
+  user_resolution <- reactiveVal(0.03)
   
   # CONTROL STEP STATUS
   status <- reactiveValues(
@@ -139,7 +140,6 @@ server <- function(input, output, session) {
     clustered = FALSE
   )
   
-
   output$data_path_input <- renderUI({
     if (is.null(seuratObj())) {
       textInput(
@@ -168,7 +168,6 @@ server <- function(input, output, session) {
       )
     }
   })
-  
   
   # READ or RESET BUTTON UI
   output$read_reset_ui <- renderUI({
@@ -256,6 +255,7 @@ server <- function(input, output, session) {
       )
     )
   })
+  
   # SAVE DATA MODAL
   observeEvent(input$save_data_btn, {
     showModal(modalDialog(
@@ -288,6 +288,7 @@ server <- function(input, output, session) {
       )
     ))
   })
+  
   # SAVE DATA ACTION
   observeEvent(input$btn_save, {
     req(seuratObj(), input$save_path)
@@ -306,6 +307,7 @@ server <- function(input, output, session) {
       showModal(modalDialog(title = "Error", e$message, easyClose = TRUE))
     })
   })
+  
   # DOWNLOAD DATA HANDLER
   output$downloadData <- downloadHandler(
     filename = function() {
@@ -317,10 +319,10 @@ server <- function(input, output, session) {
     },
     contentType = "application/octet-stream"
   )
+  
   observeEvent(input$close_modal, {
     removeModal()
   })
-  
   
   # CONTROL ALL STEPS UI
   output$control_ui <- renderUI({
@@ -504,7 +506,7 @@ server <- function(input, output, session) {
     ui_list <- append(ui_list, list(hr()))
     
     # --- Rename and Subset ---
-    if (stop_flag|| is.null(seuratObj()@meta.data$shiny_clusters)) {
+    if (stop_flag|| status$clustered == FALSE ) {
       ui_list <- append(ui_list, list(
         tags$p("🔴 RENAME AND SUBSET", style = "color:red; font-weight:bold; font-size:14px;")
       ))
@@ -540,7 +542,6 @@ server <- function(input, output, session) {
     tagList(ui_list)
   })
 
-  
   # NORMALIZATION STEP UI
   output$normalized_data_ui <- renderUI({
     req(seuratObj())
@@ -600,7 +601,6 @@ server <- function(input, output, session) {
     )
   })
   
-  
   # PCA STEP UI
   output$pca_ui <- renderUI({
     req(seuratObj())
@@ -639,9 +639,10 @@ server <- function(input, output, session) {
     )
   })
   
+  debounced_nn_dims <- reactive(input$nn_dims) %>% debounce(800)
   
-  observeEvent(input$nn_dims, {
-    user_nn_dims(input$nn_dims)
+  observeEvent(debounced_nn_dims(), {
+    user_nn_dims(debounced_nn_dims())
   })
   
   # NEIGHBOR STEP UI
@@ -772,93 +773,95 @@ server <- function(input, output, session) {
     
     showModal(
       modalDialog(
-        title = "PCA / Harmony DimPlot",
+        title = "Harmony DimPlot",
         size = "xl",
         easyClose = FALSE,
         footer = NULL,
         
         tags$div(
           class = "dimplot-modal",
-        fluidPage(
           ## ===== plot =====
           plotOutput("dimplot_modal", height = "600px"),
-          
-          hr(),
-          
-          ## ===== dims =====
-          fluidRow(
-            column(
-              4,
-              numericInput("dim1", "Dim 1: ", value = 3, min = 1)
-            ),
-            column(
-              4,
-              numericInput("dim2", "Dim 2: ", value = 4, min = 1)
-            )
-          ),
           hr(),
           ## ===== split.by + close =====
-          fluidRow(
-            column(
-              8,
-              selectInput(
+          tags$div(
+            style = "
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+          ",
+            
+            tags$div(
+              style = "display: flex; align-items: center;",
+              checkboxInput(
                 "split_by",
-                "Split by (optional)",
-                choices = c(
-                  "None" = "",
-                  "orig.ident",
-                  "sample_id"
-                ),
-                selected = ""
+                label = paste0("Split by ", input$harmony_metadata),
+                value = FALSE
               )
             ),
-            column(
-              4,
-              align = "right",
-              modalButton("Close")
-            )
+            
+            downloadButton(
+              "download_dimplot_modal",
+              "Download Plot",
+              style = "background-color: #4CAF50; color: white;"
+            ),
+            
+            modalButton("Close")
           )
-        )
-      )
-    )
-    )
-  })
+        )))})
   
   output$dimplot_modal <- renderPlot({
     
-    req(input$dim1, input$dim2)
-    dims <- c(input$dim1, input$dim2)
-    
-    if (is.null(input$split_by) || input$split_by == "") {
-      
-      p_pca <- DimPlot(
-        data,
-        reduction = "pca",
-        group.by = input$harmony_metadata,
-        dims = dims
-      )
-      
-      p_harmony <- DimPlot(
-        data,
-        reduction = "harmony",
-        group.by = input$harmony_metadata,
-        dims = dims
-      )
-      
-      (p_pca + p_harmony) +
-        plot_layout(guides = "collect")
-      
-    } else {
-      
+    if (input$split_by) {
       DimPlot(
-        data,
-        reduction = "harmony",
+        seuratObj(),
+        reduction = "umap",
         group.by = input$harmony_metadata,
-        dims = dims,
-        split.by = input$split_by
-      )
+        split.by = input$harmony_metadata
+      ) + ggtitle(NULL)
+    } else {
+      DimPlot(
+        seuratObj(),
+        reduction = "umap",
+        group.by = input$harmony_metadata,
+      ) + ggtitle(NULL)
     }
   })
+
+  output$download_dimplot_modal <- downloadHandler(
+    
+    filename = function() {
+      paste0("DimPlot_", Sys.Date(), ".png")
+    },
+    
+    content = function(file) {
+      req(seuratObj(), input$harmony_metadata)
+      
+      plot <- if (input$split_by) {
+        DimPlot(
+          seuratObj(),
+          reduction = "umap",
+          group.by = input$harmony_metadata,
+          split.by = input$harmony_metadata
+        ) + ggtitle(NULL)
+      } else {
+        DimPlot(
+          seuratObj(),
+          reduction = "umap",
+          group.by = input$harmony_metadata
+        ) + ggtitle(NULL)
+      }
+      
+      ggsave(
+        filename = file,   
+        plot = plot,
+        width = 10,
+        height = 8,
+        dpi = 300
+      )
+      showNotification("DimPlot saved to local", type = "message")
+    }
+  )
   
   observeEvent(input$upload_excel, {
     req(input$upload_excel)
@@ -1014,10 +1017,16 @@ server <- function(input, output, session) {
     )
   })
   
+  debounced_resolution <- reactive(input$resolution) %>% debounce(800)
+  
+  observeEvent(debounced_resolution(), {
+    user_resolution(debounced_resolution())
+  })
+  
   # RESOLUTION INPUT UI
   output$resolution_ui <- renderUI({
     numericInput("resolution", NULL, 
-                 value = input$resolution %||% 0.03, 
+                 value = user_resolution() %||% 0.03, 
                  min = 0.01, max = 5.0, step = 0.001, width = "100%")
   })
   
@@ -1218,6 +1227,7 @@ server <- function(input, output, session) {
   # RENAME IDENTS SERVER               
   observeEvent(input$rename_idents_btn,{
     req(seuratObj(), input$rename_idents_input)
+    browser()
     current_ident <- current_ident()
     new_ident <- input$rename_idents_input
     tryCatch({
@@ -1364,6 +1374,7 @@ server <- function(input, output, session) {
       cumulative_var = cumulative_var
     )
   })
+  
   # DISPLAY RECOMMENDATION RESULTS
   output$elbow_point <- renderText({
     rec <- recommended_dimensions()
@@ -1384,7 +1395,6 @@ server <- function(input, output, session) {
     rec <- recommended_dimensions()
     paste0(rec$recommended, " PCs")
   })
-  
   
   # PCA ELBOW PLOT
   output$elbow_plot <- renderPlot({
@@ -1418,10 +1428,12 @@ server <- function(input, output, session) {
         plot.subtitle = element_text(hjust = 0.5, color = "red", size = 11)
       )
   })
+  
   # HARMONY INTEGRATION VALUE UPDATE
   observeEvent(input$integration_harmony, {
     harmony_state(input$integration_harmony)
   })
+  
   observeEvent(seuratObj(), {
     obj <- seuratObj()
     has_harmony <- "harmony" %in% names(obj@reductions)
@@ -1816,7 +1828,6 @@ Details:", e$message))
         base_name,
         ", resolution: ", input$resolution,
         ", min_dist: ", 0.3,
-        ", PCA: ", input$nn_dims,
         if (harmony_state()) ", Harmony" else ""
       )
       
@@ -2023,7 +2034,6 @@ Details:", e$message))
     
   })
   
-  
   # SEARCH RESOLUTION BUTTON
   observeEvent(input$search_resolution_btn_ui, {
     req(seuratObj(), status$neighbor, input$start_resolution, input$end_resolution, input$step_resolution)
@@ -2112,7 +2122,6 @@ Details:", e$message))
           base_name,
           ", resolution: ", input$resolution,
           ", min_dist: ", input$umap_dist %||% 0.3,
-          ", PCA: ", input$nn_dims,
           if (harmony_state()) ", Harmony" else ""
         )
         
@@ -2205,7 +2214,6 @@ Details:", e$message))
     grid::grid.newpage()
     grid::grid.draw(tg)
   })
-  
   
   # CLUSTER HEATMAP UI
   output$cluster_heatmap_ui <- renderPlot({

@@ -140,7 +140,7 @@ tryCatch({
   )
 }
 
-ana_info  <- check_last_scale_and_pca(file.path(output_file_path, "command_info.txt"))
+  ana_info  <- check_last_scale_and_pca(file.path(output_file_path, "command_info.txt"))
 
   message("Generate different PCA UMAP embeddings...")
   for(pca in pca_num){
@@ -155,7 +155,7 @@ ana_info  <- check_last_scale_and_pca(file.path(output_file_path, "command_info.
     seurat_obj <- RunUMAP(seurat_obj, min.dist = 0.3, dims = 1:pca, reduction = "pca", verbose = FALSE)
   }
   saveRDS(seurat_obj, file.path(output_file_path, paste0("input_seurat_file_pca_", pca, ".rds")))}
-  unlink(file.path(output_file_path, "input_seurat_file.rds"))
+  remove(seurat_obj)
   
   # Annotate clusters if gene markers provided
   FindCellTypesByMarkers <- function(sobj, biomarkers = NULL) {
@@ -679,7 +679,6 @@ results <- future.apply::future_lapply(seq_len(nrow(resolution_index_table)), fu
   
   pdf(final_pdf, width = 18, height = 18)
   n_rows <- nrow(resolution_summary)
-  remove(seurat_obj)
   gc()
   # First Page
   grid::grid.newpage()
