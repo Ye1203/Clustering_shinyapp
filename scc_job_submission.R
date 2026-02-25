@@ -4,6 +4,7 @@ submit_scc_job <- function(seuratObj,
                            start_resolution,
                            step_resolution,
                            end_resolution,
+                           min.dist,
                            integration_harmony = FALSE,
                            pca_num,
                            harmony_metadata,
@@ -17,7 +18,10 @@ submit_scc_job <- function(seuratObj,
   }
   
   writeLines(capture.output(print(seuratObj@commands)), file.path(save_path, "command_info.txt"))
-  
+  # remove SCT assay to save space
+  if ("SCT" %in% Assays(seuratObj)) {
+    seuratObj[["SCT"]] <- NULL
+  }
   saveRDS(seuratObj, file = file.path(save_path, "input_seurat_file.rds"))
   
   file.copy(from = marker_path, to = file.path(save_path, "Gene_Markers.xlsx"), overwrite = TRUE)
@@ -30,6 +34,36 @@ submit_scc_job <- function(seuratObj,
   if (!dir.exists(vis_dir)) {
     dir.create(vis_dir, recursive = TRUE)
   }
+  # GENERATE SEPARATE HARMONY RSCRIPT TO AVOID MEMORY ISSUES
+  harmony_r_script_path <- file.path(save_path, "harmony_job_script.R")
+  harmony_code <- paste0('
+dyn.load("/projectnb/wax-es/00_shinyapp/Clustering/conda_env/lib/libicui18n.so.75")
+library(Seurat)
+library(harmony)
+output_file_path <- "', save_path, '"
+min.dist <- "', min.dist, '"
+pca_num <- "', pca_num, '"
+harmony_metadata <- "', harmony_metadata, '"
+integration_harmony <- ', ifelse(integration_harmony, "TRUE", "FALSE"), '
+pca_num <- as.numeric(strsplit(pca_num, ",")[[1]])
+seurat_obj <- readRDS(file.path(output_file_path, "input_seurat_file.rds"))
+DefaultAssay(seurat_obj) <- "RNA"
+set.seed(001203)
+message("Generate different PCA UMAP embeddings...")
+for(pca in pca_num){
+if(integration_harmony){
+  seurat_obj <- RunHarmony(seurat_obj, group.by.vars = harmony_metadata, reduction.use = "pca",
+                          dims.use = 1:pca, assay.use = "RNA", reduction.save = "harmony", 
+                          project.dim = TRUE, verbose = FALSE)
+  seurat_obj <- FindNeighbors(seurat_obj, reduction = "harmony", dims = 1:pca, verbose = FALSE)
+  seurat_obj <- RunUMAP(seurat_obj, min.dist = min.dist, dims = 1:pca, reduction = "harmony", verbose = FALSE)
+} else {
+  seurat_obj <- FindNeighbors(seurat_obj, reduction = "pca", dims = 1:pca, verbose = FALSE)
+  seurat_obj <- RunUMAP(seurat_obj, min.dist = min.dist, dims = 1:pca, reduction = "pca", verbose = FALSE)
+}
+saveRDS(seurat_obj, file.path(output_file_path, paste0("input_seurat_file_pca_", pca, ".rds")))}
+')
+  writeLines(harmony_code, con = harmony_r_script_path)
   
   r_script_path <- file.path(save_path, "scc_job_script.R")
     r_code <- paste0('
@@ -79,11 +113,6 @@ send_email <- function(to, subject, body) {
 }
 
 tryCatch({
-  # Load data
-  seurat_obj <- readRDS(file.path(output_file_path, "input_seurat_file.rds"))
-  DefaultAssay(seurat_obj) <- "RNA"
-  set.seed(001203)
-  
   check_last_scale_and_pca <- function(commands_file) {
   if (!file.exists(commands_file)) {
     return(list(
@@ -141,21 +170,6 @@ tryCatch({
 }
 
   ana_info  <- check_last_scale_and_pca(file.path(output_file_path, "command_info.txt"))
-
-  message("Generate different PCA UMAP embeddings...")
-  for(pca in pca_num){
-  if(integration_harmony){
-    seurat_obj <- RunHarmony(seurat_obj, group.by.vars = harmony_metadata, reduction.use = "pca",
-                            dims.use = 1:pca, assay.use = "RNA", reduction.save = "harmony", 
-                            project.dim = TRUE, verbose = FALSE)
-    seurat_obj <- FindNeighbors(seurat_obj, reduction = "harmony", dims = 1:pca, verbose = FALSE)
-    seurat_obj <- RunUMAP(seurat_obj, min.dist = 0.3, dims = 1:pca, reduction = "harmony", verbose = FALSE)
-  } else {
-    seurat_obj <- FindNeighbors(seurat_obj, reduction = "pca", dims = 1:pca, verbose = FALSE)
-    seurat_obj <- RunUMAP(seurat_obj, min.dist = 0.3, dims = 1:pca, reduction = "pca", verbose = FALSE)
-  }
-  saveRDS(seurat_obj, file.path(output_file_path, paste0("input_seurat_file_pca_", pca, ".rds")))}
-  remove(seurat_obj)
   
   # Annotate clusters if gene markers provided
   FindCellTypesByMarkers <- function(sobj, biomarkers = NULL) {
@@ -997,6 +1011,7 @@ results <- future.apply::future_lapply(seq_len(nrow(resolution_index_table)), fu
     "\n",
     "module load R/4.4.3\n",
     "\n",
+    "Rscript ", harmony_r_script_path, "\n",
     "Rscript ", r_script_path, "\n",
     "\n",
     "echo \"==========================================================\"\n",

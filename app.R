@@ -130,7 +130,10 @@ server <- function(input, output, session) {
   user_nn_dims <- reactiveVal(NULL)
   uploaded_filename <- reactiveVal(NULL)
   user_resolution <- reactiveVal(0.03)
-  
+  temp_seuratObj <- reactiveVal(NULL)
+  min_dist_default <- reactiveVal(NULL)
+  combined_plot <- reactiveVal(NULL)
+  uploaded_file_info <- reactiveVal(NULL)
   # CONTROL STEP STATUS
   status <- reactiveValues(
     normalized = FALSE,
@@ -194,7 +197,17 @@ server <- function(input, output, session) {
     tryCatch({
       obj <- readRDS(path)
       DefaultAssay(obj) <- "RNA"  
-      seuratObj(obj) 
+      seuratObj(obj)
+      auto_min_dist <- function(n_cells) {
+        md <- if (n_cells < 10000) 0.3
+        else if (n_cells < 15000) 0.2
+        else if (n_cells < 30000) 0.1
+        else if (n_cells < 50000) 0.05
+        else if (n_cells < 100000) 0.03
+        else 0.01
+        md
+      }
+      min_dist_default(auto_min_dist(ncol(obj)))
       removeModal()
       showNotification("RDS file loaded.", type = "message")
     }, error = function(e) {
@@ -227,6 +240,8 @@ server <- function(input, output, session) {
     status$pca <- FALSE
     status$neighbor <- FALSE
     status$clustered <- FALSE
+    temp_seuratObj(NULL)
+    combined_plot <- reactiveVal(NULL)
     
     showNotification("Reset completed. You can now load a new dataset.", type = "message")
   })
@@ -261,9 +276,21 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       size = "m",
       title = "Save Data",
-      fluidRow(column(12,
-          textInput("save_path", "Input save path on SCC or local file name (enter the save path using forward slashes (/). The filename should end with '.rds')",
-                    value = paste0(file_path_sans_ext(input$data_path), "_", Sys.Date(), ".rds"), width = "100%"))),
+      fluidRow(
+        column(12,
+               checkboxInput("rds_file_chk", "RDS File", value = TRUE),
+               checkboxInput("cmd_history_chk", "Command History File", value = TRUE)
+        ),
+        uiOutput("optional_save_options_ui"),
+        column(12,
+               textInput(
+                 "save_path",
+                 "Input save path on SCC or local file name (use forward slashes (/). The filename should end with '.rds')",
+                 value = file.path(dirname(input$data_path), paste0(plot_title(), "_", Sys.Date(), ".rds")),
+                 width = "100%"
+               )
+        )
+      ),
       footer = tagList(
         div(style = "display: flex; width: 100%; gap: 8px;",
             actionButton("btn_save", "Save", style = "
@@ -272,52 +299,302 @@ server <- function(input, output, session) {
             color: white;
             border: none;
           "),
-           downloadButton("downloadData", "Download Locally", style = "
+            downloadButton("downloadData", "Download Locally", style = "
             flex: 1;
             background-color: green;  
             color: white;
             border: none;
           "),
-           actionButton("close_modal", "Close", style = "
-          flex: 1;
-          background-color: #dc3545;  
-          color: white;
-          border: none;
-        ")
+            actionButton("close_modal", "Close", style = "
+            flex: 1;
+            background-color: #dc3545;  
+            color: white;
+            border: none;
+          ")
         )
       )
     ))
+    
+    output$optional_save_options_ui <- renderUI({
+      opts <- c()
+      if (!is.null(input$integration_harmony) && input$integration_harmony && !is.null(status$neighbor) && status$neighbor) {
+        opts <- c(opts, "Harmony Plot (Integration)" = "harmony_plot")
+      }
+      if (!is.null(status$clustered) && status$clustered) {
+        opts <- c(opts, "Combined Plot (umap, heatmap, dotplot)" = "combined_plot", "Gene Marker (for clustering)" = "gene_marker")
+      }
+      if (length(opts) == 0) return(NULL) 
+      
+      tags$div(
+        style = "margin-left: 15px;", 
+        checkboxGroupInput(
+          "save_options_optional",
+          "Other files to save:",
+          choices = opts,
+          selected = NULL
+        )
+      )
+    })
   })
   
-  # SAVE DATA ACTION
+  observeEvent(input$save_data_btn, {
+    showModal(modalDialog(
+      size = "l",
+      title = "Save Data",
+      fluidRow(
+        tags$p("Select the files you want to save or download:", 
+               style = "font-weight: bold; margin-left: 15px;"),
+        column(12,
+               checkboxInput("rds_file_chk", "RDS File", value = FALSE),
+               checkboxInput("cmd_history_chk", "Command History File", value = FALSE)
+        ),
+        uiOutput("optional_save_options_ui"),
+        column(12,
+               textInput(
+                 "save_path",
+                 "Input save path on SCC or local file name (use forward slashes (/). The filename should end with '.rds')",
+                 value = paste0(file_path_sans_ext(input$data_path), "_", Sys.Date(), ".rds"),
+                 width = "100%"
+               )
+        )
+      ),
+      footer = tagList(
+        div(style = "display: flex; width: 100%; gap: 8px;",
+            actionButton("btn_save", "Save", style = "
+            flex: 1;
+            background-color: #007bff; 
+            color: white;
+            border: none;
+          "),
+            downloadButton("downloadData", "Download Locally", style = "
+            flex: 1;
+            background-color: green;  
+            color: white;
+            border: none;
+          "),
+            actionButton("close_modal", "Close", style = "
+            flex: 1;
+            background-color: #dc3545;  
+            color: white;
+            border: none;
+          ")
+        )
+      )
+    ))
+    
+    output$optional_save_options_ui <- renderUI({
+      opts <- c()
+      if (!is.null(input$integration_harmony) && input$integration_harmony && !is.null(status$neighbor) && status$neighbor) {
+        opts <- c(opts, "Harmony Plot" = "harmony_plot")
+      }
+      if (!is.null(status$clustered) && status$clustered) {
+        opts <- c(opts, "Combined Plot" = "combined_plot", "Gene Marker" = "gene_marker")
+      }
+      if (length(opts) == 0) return(NULL)
+      tags$div(
+        style = "margin-left: 15px;", 
+        checkboxGroupInput(
+          "save_options_optional",
+          "Other files to save:",
+          choices = opts,
+          selected = NULL
+        )
+      )
+    })
+  })
+  
   observeEvent(input$btn_save, {
     req(seuratObj(), input$save_path)
     save_path <- input$save_path
+    selected_files <- c()
+    if (isTRUE(input$rds_file_chk)) selected_files <- c(selected_files, "rds_file")
+    if (isTRUE(input$cmd_history_chk)) selected_files <- c(selected_files, "command_history")
+    if (!is.null(input$save_options_optional)) selected_files <- c(selected_files, input$save_options_optional)
+    
     showModal(modalDialog(title = "Please wait", 
                           tagList(
                             p("Saving..."),
-                            p("The waiting time is related to the size of the dataset. Be patience...")
+                            p("The waiting time depends on dataset size. Please be patient...")
                           ), footer = NULL, easyClose = FALSE))
+    
     tryCatch({
-      saveRDS(seuratObj(), file = save_path)
+      if ("rds_file" %in% selected_files) {
+        if (!is.null(temp_seuratObj())) saveRDS(temp_seuratObj(), file = save_path)
+        else saveRDS(seuratObj(), file = save_path)
+      }
+      
+      if ("command_history" %in% selected_files) {
+        cmd_lines <- c(
+          paste0("findvariable: ", input$findvariable %||% "variable"),
+          paste0("npc: ", input$npc),
+          paste0("nn_dims: ", input$nn_dims),
+          paste0("integration_harmony: ", input$integration_harmony %||% FALSE),
+          paste0("harmony_metadata: ", if (input$integration_harmony) input$harmony_metadata else "NULL"),
+          paste0("resolution: ", input$resolution),
+          paste0("umap_dist: ", input$umap_dist)
+        )
+        if (!is.null(input$sample_select)) {
+          vals <- sort(unique(seuratObj()@meta.data[[input$sample_select]]))
+          for (val in vals) {
+            sel <- input[[paste0("sample_cb_", val)]] %||% FALSE
+            rename_val <- input[[paste0("sample_rename_", val)]] %||% val
+            cmd_lines <- c(cmd_lines, paste0("sample_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
+          }
+        }
+        if (!is.null(current_ident())) {
+          vals <- sort(unique(seuratObj()@meta.data[[current_ident()]]))
+          for (val in vals) {
+            sel <- input[[paste0("cluster_cb_", val)]] %||% FALSE
+            rename_val <- input[[paste0("cluster_rename_", val)]] %||% val
+            cmd_lines <- c(cmd_lines, paste0("cluster_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
+          }
+        }
+        cmd_file <- paste0(tools::file_path_sans_ext(save_path), "_CommandHistory_", Sys.Date(), ".txt")
+        writeLines(cmd_lines, cmd_file)
+      }
+      if ("harmony_plot" %in% selected_files) {
+        harmony_plot <- DimPlot(
+          seuratObj(),
+          reduction = "umap",
+          group.by = input$harmony_metadata,
+          split.by = input$harmony_metadata
+        ) + ggtitle(NULL)
+        harmony_file <- paste0(file_path_sans_ext(save_path),paste0("HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".png"))
+        ggsave(harmony_file, plot = harmony_plot, width = 20, height = 8, dpi = 300)
+      }
+      
+      if ("combined_plot" %in% selected_files) {
+
+        comb_plot <- create_combined_cluster_plot_patchwork(
+          umap_plot(),
+          table_data(),
+          heatmap_plot(),
+          dotplot1_plot(),
+          dotplot2_plot(),
+          resolution = input$resolution
+        )
+        comb_file <- paste0(file_path_sans_ext(save_path),paste0(input$title_for_download, ".pdf"))
+        height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
+        ggsave(comb_file, plot = comb_plot, width = 18, height = height_combined)
+      }
+      
+      if ("gene_marker" %in% selected_files) {
+        gene_file <- if (!is.null(uploaded_file_info()) && file.exists(uploaded_file_info()$datapath)) {
+          uploaded_file_info()$datapath
+        } else {
+          file.path(getwd(), "Gene_Markers.xlsx")
+        }
+        if (!file.exists(gene_file)) {
+          showNotification("Gene Marker file not found!", type = "error")
+        } else {
+          gene_dest <- paste0(tools::file_path_sans_ext(save_path), "_GeneMarkers.xlsx")
+          file.copy(gene_file, gene_dest, overwrite = TRUE)
+        }
+      }
+      
+      showNotification("Selected files saved successfully.", type = "message")
       removeModal()
-      showNotification(paste("Data saved to", save_path), type = "message")
     }, error = function(e) {
       removeModal()
       showModal(modalDialog(title = "Error", e$message, easyClose = TRUE))
     })
   })
   
-  # DOWNLOAD DATA HANDLER
   output$downloadData <- downloadHandler(
     filename = function() {
-      basename(input$save_path) %||% paste0("data_", Sys.Date(), ".rds")
+      paste0("Clustering_",file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".zip")
     },
     content = function(file) {
       req(seuratObj())
-      saveRDS(seuratObj(), file)
+      tmp_dir <- tempdir()
+      files_to_zip <- c()
+      selected_files <- c()
+      if (isTRUE(input$rds_file_chk)) selected_files <- c(selected_files, "rds_file")
+      if (isTRUE(input$cmd_history_chk)) selected_files <- c(selected_files, "command_history")
+      if (!is.null(input$save_options_optional)) selected_files <- c(selected_files, input$save_options_optional)
+      
+      if ("rds_file" %in% selected_files) {
+        rds_path <- file.path(tmp_dir, basename(input$save_path))
+        if (!is.null(temp_seuratObj())) saveRDS(temp_seuratObj(), file = rds_path)
+        else saveRDS(seuratObj(), file = rds_path)
+        files_to_zip <- c(files_to_zip, rds_path)
+      }
+      
+      if ("command_history" %in% selected_files) {
+        cmd_lines <- c(
+          paste0("findvariable: ", input$findvariable %||% "variable"),
+          paste0("npc: ", input$npc),
+          paste0("nn_dims: ", input$nn_dims),
+          paste0("integration_harmony: ", input$integration_harmony %||% FALSE),
+          paste0("harmony_metadata: ", if (input$integration_harmony) input$harmony_metadata else "NULL"),
+          paste0("resolution: ", input$resolution),
+          paste0("umap_dist: ", input$umap_dist)
+        )
+        if (!is.null(input$sample_select)) {
+          vals <- sort(unique(seuratObj()@meta.data[[input$sample_select]]))
+          for (val in vals) {
+            sel <- input[[paste0("sample_cb_", val)]] %||% FALSE
+            rename_val <- input[[paste0("sample_rename_", val)]] %||% val
+            cmd_lines <- c(cmd_lines, paste0("sample_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
+          }
+        }
+        if (!is.null(current_ident())) {
+          vals <- sort(unique(seuratObj()@meta.data[[current_ident()]]))
+          for (val in vals) {
+            sel <- input[[paste0("cluster_cb_", val)]] %||% FALSE
+            rename_val <- input[[paste0("cluster_rename_", val)]] %||% val
+            cmd_lines <- c(cmd_lines, paste0("cluster_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
+          }
+        }
+        cmd_file <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$save_path)), "_CommandHistory_", Sys.Date(), ".txt"))
+        writeLines(cmd_lines, cmd_file)
+        files_to_zip <- c(files_to_zip, cmd_file)
+      }
+      
+      if ("harmony_plot" %in% selected_files) {
+        harmony_plot <- DimPlot(
+          seuratObj(),
+          reduction = "umap",
+          group.by = input$harmony_metadata,
+          split.by = input$harmony_metadata
+        ) + ggtitle(NULL)
+        harmony_file <- file.path(tmp_dir, paste0("HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".png"))
+        ggsave(harmony_file, plot = harmony_plot, width = 20, height = 8, dpi = 300)
+        files_to_zip <- c(files_to_zip, harmony_file)
+      }
+      
+      if ("combined_plot" %in% selected_files) {
+        comb_plot <- create_combined_cluster_plot_patchwork(
+          umap_plot(),
+          table_data(),
+          heatmap_plot(),
+          dotplot1_plot(),
+          dotplot2_plot(),
+          resolution = input$resolution
+        )
+        comb_file <- file.path(tmp_dir, paste0(input$title_for_download, ".pdf"))
+        height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
+        ggsave(comb_file, plot = comb_plot, width = 18, height = height_combined)
+        files_to_zip <- c(files_to_zip, comb_file)
+      }
+      if ("gene_marker" %in% selected_files) {
+        gene_file <- if (!is.null(uploaded_file_info()) && file.exists(uploaded_file_info()$datapath)) {
+          uploaded_file_info()$datapath
+        } else {
+          file.path(getwd(), "Gene_Markers.xlsx")
+        }
+        if (!file.exists(gene_file)) {
+          showNotification("Gene Marker file not found for download!", type = "error")
+        } else {
+          gene_dest <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$data_path)), "_Gene_Marker.xlsx"))
+          file.copy(gene_file, gene_dest, overwrite = TRUE)
+          files_to_zip <- c(files_to_zip, gene_dest)
+        }
+      }
+      
+      zip::zip(zipfile = file, files = files_to_zip, mode = "cherry-pick")
     },
-    contentType = "application/octet-stream"
+    contentType = "application/zip"
   )
   
   observeEvent(input$close_modal, {
@@ -506,7 +783,7 @@ server <- function(input, output, session) {
     ui_list <- append(ui_list, list(hr()))
     
     # --- Rename and Subset ---
-    if (stop_flag|| status$clustered == FALSE ) {
+    if (stop_flag|| status$clustered == FALSE) {
       ui_list <- append(ui_list, list(
         tags$p("🔴 RENAME AND SUBSET", style = "color:red; font-weight:bold; font-size:14px;")
       ))
@@ -639,7 +916,7 @@ server <- function(input, output, session) {
     )
   })
   
-  debounced_nn_dims <- reactive(input$nn_dims) %>% debounce(800)
+  debounced_nn_dims <- reactive(input$nn_dims) %>% debounce(3000)
   
   observeEvent(debounced_nn_dims(), {
     user_nn_dims(debounced_nn_dims())
@@ -796,7 +1073,7 @@ server <- function(input, output, session) {
               checkboxInput(
                 "split_by",
                 label = paste0("Split by ", input$harmony_metadata),
-                value = FALSE
+                value = TRUE
               )
             ),
             
@@ -829,44 +1106,44 @@ server <- function(input, output, session) {
   })
 
   output$download_dimplot_modal <- downloadHandler(
-    
     filename = function() {
-      paste0("DimPlot_", Sys.Date(), ".png")
+      paste0("HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".png")
     },
-    
     content = function(file) {
       req(seuratObj(), input$harmony_metadata)
       
-      plot <- if (input$split_by) {
-        DimPlot(
+      if (isTRUE(input$split_by)) {
+        plot <- DimPlot(
           seuratObj(),
           reduction = "umap",
           group.by = input$harmony_metadata,
           split.by = input$harmony_metadata
         ) + ggtitle(NULL)
+        ggsave(
+          filename = file,
+          plot = plot,
+          width = 20,
+          height = 8,
+          dpi = 300
+        )
       } else {
-        DimPlot(
+        plot <- DimPlot(
           seuratObj(),
           reduction = "umap",
           group.by = input$harmony_metadata
         ) + ggtitle(NULL)
+        ggsave(
+          filename = file,
+          plot = plot,
+          width = 12,
+          height = 8,
+          dpi = 300
+        )
       }
       
-      ggsave(
-        filename = file,   
-        plot = plot,
-        width = 10,
-        height = 8,
-        dpi = 300
-      )
       showNotification("DimPlot saved to local", type = "message")
     }
   )
-  
-  observeEvent(input$upload_excel, {
-    req(input$upload_excel)
-    uploaded_filename(input$upload_excel$name)
-  })
   
   # CLUSTERING STEP UI
   output$clustering_ui <- renderUI({ 
@@ -908,10 +1185,10 @@ server <- function(input, output, session) {
                    fileInput("upload_excel", NULL,
                              accept = c(".xlsx", ".xls"),
                              buttonLabel = "Select File...",
-                             placeholder = if (is.null(uploaded_filename())) {
+                             placeholder = if (is.null(uploaded_file_info())) {
                                "No file selected, Using default"
                              } else {
-                               paste("Selected:", uploaded_filename())
+                               paste("Selected:", uploaded_file_info()$name)
                              },
                              width = "330px")
                  )
@@ -1017,7 +1294,7 @@ server <- function(input, output, session) {
     )
   })
   
-  debounced_resolution <- reactive(input$resolution) %>% debounce(800)
+  debounced_resolution <- reactive(input$resolution) %>% debounce(3000)
   
   observeEvent(debounced_resolution(), {
     user_resolution(debounced_resolution())
@@ -1027,7 +1304,7 @@ server <- function(input, output, session) {
   output$resolution_ui <- renderUI({
     numericInput("resolution", NULL, 
                  value = user_resolution() %||% 0.03, 
-                 min = 0.01, max = 5.0, step = 0.001, width = "100%")
+                 min = 0.001, max = 5.000, step = 0.001, width = "100%")
   })
   
   
@@ -1038,10 +1315,12 @@ server <- function(input, output, session) {
       val <- "shiny_clusters"
       current_ident(val)
     }
+    mdcols <- names(sapply(seuratObj()@meta.data, function(x) !is.numeric(x))[sapply(seuratObj()@meta.data, function(x) !is.numeric(x))])
+    mdcols <- setdiff(mdcols, "CB")
     tagList(
       fluidRow(
         div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
-            h5("Metadata column name:",
+            h5("Cluster metadata column name:",
                style = "font-weight: bold;")),
         div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
             h5(current_ident(),
@@ -1054,14 +1333,25 @@ server <- function(input, output, session) {
             actionButton("rename_idents_btn","Rename Column",
               width = "150px",class = "btn-primary"))
       ),
-      uiOutput("sample_subset_rename_ui"),
+      fluidRow(
+        column(6,
+               h4(paste0("Cluster: ", current_ident())),
+               h4(""),
+               uiOutput("cluster_subset_rename_ui")  # Combined UI
+        ),
+        column(6,
+               fluidRow(
+               div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
+                   h5("Sample:",style = "font-weight: bold;")),
+               div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
+                   selectInput("sample_select", NULL, choices = mdcols))),
+               uiOutput("sample_subset_rename_ui")  # Combined UI
+        )
+        ),
       h5("Attention: Please using \"SAVE DATA\" to save your current result before subset!!!", style = "font-weight: bold; color:red;"),
       fluidRow(
-        div(style = "display: inline-block; vertical-align: top; margin-left:30px;",
-          actionButton("rename_btn_ui", "Rename",
-                       width = "200px", class = "btn-primary")),
       div(style = "display: inline-block; vertical-align: top; margin-left:30px;",
-          actionButton("subset_btn_ui", "Subset",
+          actionButton("subset_btn_ui", "Rename & Subset",
                        width = "200px", class = "btn-danger")),
       div(style = "display: inline-block; vertical-align: top; margin-left:30px;",
           conditionalPanel(condition = "input.confirm_subset > 0",
@@ -1096,7 +1386,7 @@ server <- function(input, output, session) {
         # Project name
         textInput(
           "scc_project_name", 
-          "Project name:", 
+          "Project name (project name on scc, like wax-es or wax-dk):", 
           placeholder = "e.g., wax-es"
         ),
         
@@ -1168,11 +1458,13 @@ server <- function(input, output, session) {
     marker_path <- if (!is.null(input$upload_excel)) {
       input$upload_excel$datapath
     } else {
-      "/projectnb/wax-es/00_shinyapp/Clustering/Clustering_shinyapp/Gene_Markers.xlsx"
+      file.path(getwd(), "Gene_Markers.xlsx")
     }
     tryCatch({
       # Call function to submit SCC job
-      source("/projectnb/wax-es/00_shinyapp/Clustering/Clustering_shinyapp/scc_job_submission.R")
+
+      source(file.path(getwd(), "scc_job_submission.R"))
+      min.dist <- if(is.null(input$umap_dist)){input$umap_dist}else{min_dist_default()}
       qsub_job_number <- submit_scc_job(
         seuratObj(),
         save_path = input$scc_save_path,
@@ -1180,6 +1472,7 @@ server <- function(input, output, session) {
         start_resolution = input$start_resolution,
         step_resolution = input$step_resolution,
         end_resolution = input$end_resolution,
+        min.dist = min.dist,
         integration_harmony = input$integration_harmony,
         pca_num = input$scc_pca_num,
         harmony_metadata = if (input$integration_harmony) {
@@ -1227,7 +1520,6 @@ server <- function(input, output, session) {
   # RENAME IDENTS SERVER               
   observeEvent(input$rename_idents_btn,{
     req(seuratObj(), input$rename_idents_input)
-    browser()
     current_ident <- current_ident()
     new_ident <- input$rename_idents_input
     tryCatch({
@@ -1449,25 +1741,41 @@ server <- function(input, output, session) {
   # Harmony metadata UI
   output$harmony_metadata_ui <- renderUI({
     req(seuratObj())
-    metadata_cols <- colnames(seuratObj()@meta.data)
-    tagList( 
-    div(
+    
+    md <- seuratObj()@meta.data
+    metadata_cols <- colnames(md)
+    
+    metadata_cols <- metadata_cols[!grepl("CB", metadata_cols, ignore.case = TRUE)]
+    numeric_filter <- sapply(md[ , metadata_cols, drop = FALSE], function(x) {
+      is.numeric(x) && length(unique(x)) > 100
+    })
+    metadata_cols <- metadata_cols[!numeric_filter]
+    default_col <- if (any(grepl("^SampleID", metadata_cols, ignore.case = TRUE))) {
+      metadata_cols[grepl("^SampleID", metadata_cols, ignore.case = TRUE)][1]
+    } else {
+      metadata_cols[1]
+    }
+    selected_col <- harmony_meta_state() %||% default_col
+    tagList(
+      div(
         style = "display: inline-block; vertical-align: middle; margin-left:20px;",
-        h5("Select metadata column for Harmony integration (sample identification):", style = "font-weight: bold; display: inline-block; margin-right:8px;"),
+        h5("Select metadata column for Harmony integration (sample identification):",
+           style = "font-weight: bold; display: inline-block; margin-right:8px;"),
         div(
           style = "margin-right:10px; display:inline-block;",
           selectInput(
             "harmony_metadata", NULL,
             choices = metadata_cols,
-            selected = harmony_meta_state() %||% metadata_cols[1],
+            selected = selected_col,
             width = "200px"
           )
-        )), 
+        )
+      ),
       div(
         style = "margin-left:40px;",
         textOutput("harmony_metadata_preview")
       ),
-    br()
+      br()
     )
   })
   
@@ -1493,16 +1801,17 @@ server <- function(input, output, session) {
                             p("The waiting time is related to the size of the dataset and number of PCs.")
                           ), footer = NULL, easyClose = FALSE))
     tryCatch({
+      
       if(input$integration_harmony){
         req(input$harmony_metadata)
         seuratObj <- RunHarmony(seuratObj(), group.by.vars = input$harmony_metadata, reduction.use = "pca",
                                 dims.use = 1:input$nn_dims, assay.use = "RNA", reduction.save = "harmony", 
                                 project.dim = TRUE, verbose = FALSE)
         seuratObj <- FindNeighbors(seuratObj, reduction = "harmony", dims = 1:input$nn_dims, verbose = FALSE)
-        seuratObj <- RunUMAP(seuratObj, min.dist = 0.3, dims = 1:input$nn_dims, reduction = "harmony", verbose = FALSE)
+        seuratObj <- RunUMAP(seuratObj, min.dist = min_dist_default(), dims = 1:input$nn_dims, reduction = "harmony", verbose = FALSE)
       } else {
         seuratObj <- FindNeighbors(seuratObj(), reduction = "pca", dims = 1:input$nn_dims, verbose = FALSE)
-        seuratObj <- RunUMAP(seuratObj, min.dist = 0.3, dims = 1:input$nn_dims, reduction = "pca", verbose = FALSE)
+        seuratObj <- RunUMAP(seuratObj, min.dist = min_dist_default(), dims = 1:input$nn_dims, reduction = "pca", verbose = FALSE)
       }
       seuratObj(seuratObj)
       
@@ -1522,6 +1831,67 @@ server <- function(input, output, session) {
       showModal(modalDialog(title = "Error", e$message, easyClose = TRUE))
     })
   })
+  
+  create_combined_cluster_plot_patchwork <- function(umap_plot, table_data, heatmap_plot, dotplot1 = NULL, dotplot2 = NULL, resolution) {
+    
+    table_plot <- function(table_data) {
+      if (is.null(table_data)) return(ggplot() + theme_void())
+      
+      table_grob <- gridExtra::tableGrob(
+        table_data,
+        rows = NULL,
+        theme = gridExtra::ttheme_minimal(
+          base_size = 11,
+          padding = unit(c(2, 2), "mm")
+        )
+      )
+      
+      ggplot() + 
+        annotation_custom(table_grob) + 
+        theme_void() +
+        theme(plot.margin = margin(5, 5, 5, 5))
+    }
+    
+    cluster_n <- sum(table_data$cluster != "total", na.rm = TRUE)
+    top_row <- (umap_plot | table_plot(table_data) | heatmap_plot) + 
+      plot_layout(widths = c(4, 3, 5))
+    
+    title_plot <- ggplot() +
+      annotate("text", x = 0.5, y = 0.5, 
+               label = input$title_for_download %||% plot_title(),
+               size = 8,
+               hjust = 0.5, vjust = 0.5) +
+      theme_void() +
+      theme(
+        plot.margin = margin(5, 5, 5, 5),
+        plot.background = element_rect(fill = "white", color = NA)
+      )
+    combined_plot <- title_plot / top_row
+    
+    bottom_plots <- list()
+    
+    if (!is.null(dotplot1)) {
+      bottom_plots[[length(bottom_plots) + 1]] <- dotplot1
+    }
+    if (!is.null(dotplot2)) {
+      bottom_plots[[length(bottom_plots) + 1]] <- dotplot2
+    }
+    
+    if (length(bottom_plots) > 0) {
+      for (plot in bottom_plots) {
+        combined_plot <- combined_plot / plot
+      }
+    }
+    
+    n_parts <- 1 + 1 + length(bottom_plots)  
+    height_heatmap <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){2}else{length(unique(heatmap_plot()$data$cluster))*0.2}
+    heights <- c(0.15, height_heatmap, rep(1.5, length(bottom_plots)))
+    
+    combined_plot <- combined_plot + 
+      plot_layout(heights = heights[1:n_parts], ncol = 1)
+    
+    return(combined_plot)
+  }
   
   # CLUSTERING STEP SERVER
   observeEvent(input$clustering_btn_ui,{
@@ -1700,7 +2070,6 @@ Details:", e$message))
           group_by(gene) %>%
           mutate(avg_exp_scaled = scale(avg_exp)[,1]) %>%
           ungroup()
-        
         clusters_numeric <- sort(as.numeric(unique(results$cluster)), decreasing = TRUE)
         results$cluster <- factor(results$cluster, 
                                   levels = as.character(clusters_numeric),
@@ -1767,7 +2136,7 @@ Details:", e$message))
         path <- if (!is.null(input$upload_excel)) {
           input$upload_excel$datapath
         } else {
-          "/projectnb/wax-es/00_shinyapp/Clustering/Clustering_shinyapp/Gene_Markers.xlsx"
+          file.path(getwd(), "Gene_Markers.xlsx")
         }
         
         allowed_genes <- rownames(sobj)
@@ -1809,7 +2178,6 @@ Details:", e$message))
                                  yaxis_text_size = 10,
                                  rotate_x = TRUE)
       heatmap_plot(heatmap)
-      
       sobj <- RenameIdents(sobj, findcelltypes_result$new_labels)
       labs <- levels(Idents(sobj))
       cluster_num <- as.numeric(sub(".*\\((\\d+)\\).*", "\\1", labs))
@@ -1817,7 +2185,6 @@ Details:", e$message))
       Idents(sobj) <- factor(Idents(sobj), levels = new_levels)
       sobj$shiny_clusters <- Idents(sobj)
       Idents(sobj) <- sobj$shiny_clusters
-
       base_name <- if (!is.null(subset_data_path())) {
         paste0("Subset: ", file_path_sans_ext(basename(subset_data_path())))
       } else {
@@ -1827,7 +2194,7 @@ Details:", e$message))
       title <- paste0(
         base_name,
         ", resolution: ", input$resolution,
-        ", min_dist: ", 0.3,
+        ", min_dist: ", min_dist_default(),
         if (harmony_state()) ", Harmony" else ""
       )
       
@@ -1838,6 +2205,53 @@ Details:", e$message))
                   theme(plot.title = element_text(face = "bold", size = 10))+
                   guides(color = guide_legend(ncol = 1, 
                                               override.aes = list(size = 3))))
+      
+      get_cluster_summary_table <- function(seurat_obj) {
+        all_cells <- seurat_obj@meta.data %>%
+          select(shiny_clusters, counts = nCount_RNA, genes = nFeature_RNA) %>%
+          group_by(shiny_clusters) %>%
+          summarise(
+            ncells = n(),
+            avg.counts = as.integer(round(mean(counts))),
+            avg.genes = as.integer(round(mean(genes)))
+          ) %>%
+          ungroup()
+        
+        result <- all_cells %>%
+          mutate(all = sum(ncells),
+                 cluster = as.character(shiny_clusters),
+                 pct = round(100 * ncells / all, 2)) %>%
+          select(cluster, ncells, pct, avg.counts, avg.genes)
+        
+        result <- bind_rows(
+          result,
+          result %>%
+            summarise(
+              cluster = "total",
+              ncells = sum(ncells),
+              pct = sum(pct),
+              avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
+              avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA)))
+            )
+        )
+        
+        return(result)
+      }
+      
+      df <- get_cluster_summary_table(sobj)
+      
+      colnames(df) <- c("cluster", "ncell", "pct", "avg.counts", "avg.genes")
+      table_data(df)
+      combined_plot <- create_combined_cluster_plot_patchwork(
+        umap_plot(),
+        table_data(),
+        heatmap_plot(),
+        dotplot1_plot(),
+        dotplot2_plot(),
+        resolution = input$resolution
+      )
+      combined_plot(combined_plot)
+      
       seuratObj(sobj)
       status$normalized <- TRUE
       status$scaled <- TRUE
@@ -1874,7 +2288,7 @@ Details:", e$message))
                  div(class = "tooltip-divider"),
                  div("Minimum distance parameter controls how tightly UMAP packs points together.
                      Lower values result in a more clustered embedding, while higher values
-                     produce a more spread-out representation. A typical starting value is 0.3.
+                     produce a more spread-out representation. 
                      Adjusting this parameter can help reveal different structures in the data.")
             )
         ),
@@ -1890,8 +2304,8 @@ Details:", e$message))
   #   UMAP DISTANCE INPUT UI
   output$umap_dist_ui <- renderUI({
     numericInput("umap_dist", NULL, 
-                 value = input$umap_dist %||% 0.3, 
-                 min = 0.01, max = 0.99, step = 0.01, width = "100%")
+                 value = input$umap_dist %||% min_dist_default(), 
+                 min = 0.001, max = 0.5, step = 0.001, width = "100%")
   })
   
   # DOWNLOAD EXCEL TEMPLATE
@@ -1900,15 +2314,13 @@ Details:", e$message))
       "Gene_Markers.xlsx"
     },
     content = function(file) {
-      template_path <- "/projectnb/wax-es/00_shinyapp/Clustering/Clustering_shinyapp/Gene_Markers.xlsx" 
-      
+      template_path <- file.path(getwd(), "Gene_Markers.xlsx")
       if (file.exists(template_path)) {
         file.copy(template_path, file)
       }
     }
   )
   
-  # upload excel
   observeEvent(input$upload_excel, {
     req(input$upload_excel)
     
@@ -1918,25 +2330,42 @@ Details:", e$message))
     )
     
     tryCatch({
-      
       sheets <- openxlsx::getSheetNames(input$upload_excel$datapath)
       seurat_genes <- rownames(seuratObj())
       
       missing_list <- list()
+      duplicates_within <- list()
+      duplicates_across <- list()
       
-      for (sheet in sheets) {
+      sheets_to_check <- sheets[grepl("^DOTPLOT", sheets, ignore.case = TRUE)]
+      
+      for (sheet in sheets_to_check) {
         df <- openxlsx::read.xlsx(input$upload_excel$datapath, sheet = sheet)
+        gene_groups_map_temp <- list()
         
         for (colname in colnames(df)) {
-          col_values <- df[[colname]] |>
-            as.character() |>
-            unique() |>
-            setdiff(c(NA, "", " "))
+          col_genes <- as.character(df[[colname]])
+          col_genes <- trimws(col_genes)
+          col_genes <- col_genes[!is.na(col_genes) & col_genes != ""]
           
-          if (length(col_values) == 0) next
+          dup_within_col <- col_genes[duplicated(col_genes)]
+          if (length(dup_within_col) > 0) {
+            duplicates_within[[paste0(sheet, "_", colname)]] <- list(
+              sheet = sheet,
+              column = colname,
+              duplicate_markers = unique(dup_within_col)
+            )
+          }
           
-          missing <- setdiff(col_values, seurat_genes)
+          for (gene in unique(col_genes)) {
+            if (!is.null(gene_groups_map_temp[[gene]])) {
+              gene_groups_map_temp[[gene]] <- c(gene_groups_map_temp[[gene]], colname)
+            } else {
+              gene_groups_map_temp[[gene]] <- colname
+            }
+          }
           
+          missing <- setdiff(col_genes, seurat_genes)
           if (length(missing) > 0) {
             missing_list[[paste0(sheet, "_", colname)]] <- list(
               sheet = sheet,
@@ -1945,93 +2374,102 @@ Details:", e$message))
             )
           }
         }
+        
+        dup_across_cols <- Filter(function(g) length(g) > 1, gene_groups_map_temp)
+        if (length(dup_across_cols) > 0) {
+          for (gene in names(dup_across_cols)) {
+            duplicates_across[[paste0(sheet, "_", gene)]] <- list(
+              sheet = sheet,
+              gene = gene,
+              columns = dup_across_cols[[gene]]
+            )
+          }
+        }
       }
       
-      sheets_to_check <- intersect(c("DOTPLOT1", "DOTPLOT2"), sheets)
-      
-      for (sheet in sheets_to_check) {
-        df <- openxlsx::read.xlsx(input$upload_excel$datapath, sheet = sheet)
-        
-        markers_by_group <- list()
-        for (colname in colnames(df)) {
-          genes <- df[[colname]] |>
-            as.character() |>
-            unique() |>
-            setdiff(c(NA, "", " "))
-          if (length(genes) > 0) {
-            markers_by_group[[colname]] <- genes
-          }
-        }
-        
-        gene_groups_map <- list()
-        for (group in names(markers_by_group)) {
-          for (gene in markers_by_group[[group]]) {
-            if (!is.null(gene_groups_map[[gene]])) {
-              gene_groups_map[[gene]] <- c(gene_groups_map[[gene]], group)
-            } else {
-              gene_groups_map[[gene]] <- group
-            }
-          }
-        }
-        
-        duplicates <- Filter(function(g) length(g) > 1, gene_groups_map)
-        
-        if (length(duplicates) > 0) {
-          dup_msg <- paste(
-            sapply(names(duplicates), function(gene) {
-              paste0(
-                "Marker '", gene, "' appears in columns:<br>",
-                paste(duplicates[[gene]], collapse = ", ")
-              )
-            }), collapse = "<br><br>"
+      error_msg <- ""
+      if (length(duplicates_within) > 0) {
+        for (d in duplicates_within) {
+          error_msg <- paste0(
+            error_msg,
+            "<b>Sheet:</b> ", d$sheet, "<br>",
+            "<b>Column:</b> ", d$column, "<br>",
+            "<b>Duplicate markers in column:</b> ", paste(d$duplicate_markers, collapse = ", "), 
+            "<br><br>"
           )
-          
-          showModal(modalDialog(
-            title = paste0("🚫 Error: Duplicate markers detected in ", sheet, " sheet"),
-            HTML(
-              paste0(
-                "The following markers appear in multiple columns within ", sheet, 
-                ". Please remove duplicates before proceeding:<br>", dup_msg
-              )
-            ),
-            easyClose = FALSE,
-            footer = modalButton("Close")
-          ))
-          
-          file.remove(input$upload_excel$datapath)
-          return(NULL)
         }
+      }
+      
+      if (length(duplicates_across) > 0) {
+        for (d in duplicates_across) {
+          error_msg <- paste0(
+            error_msg,
+            "<b>Sheet:</b> ", d$sheet, "<br>",
+            "<b>Marker:</b> ", d$gene, "<br>",
+            "<b>Appears in multiple columns:</b> ", paste(d$columns, collapse = ", "),
+            "<br><br>"
+          )
+        }
+      }
+      
+      if (error_msg != "") {
+        file.remove(input$upload_excel$datapath)
+        uploaded_filename(NULL)
+        showModal(modalDialog(
+          title = "🚫 Error: Duplicate markers detected",
+          HTML(error_msg),
+          easyClose = FALSE,
+          footer = tagList(
+            modalButton("Close"),
+            downloadButton("download_error_msg", "Download Error", class = "btn btn-success")
+          )
+        ))
+        
+        output$download_error_msg <- downloadHandler(
+          filename = function() {
+            paste0("duplicate_markers_error_", Sys.Date(), ".txt")
+          },
+          content = function(file) {
+            txt <- gsub("<br>", "\n", error_msg)
+            txt <- gsub("<.*?>", "", txt) 
+            writeLines(txt, file)
+          }
+        )
+        
+        return(NULL)
       }
       
       if (length(missing_list) > 0) {
-        msg <- ""
+        warning_msg <- ""
         for (item in missing_list) {
-          msg <- paste0(
-            msg,
+          warning_msg <- paste0(
+            warning_msg,
             "<b>Sheet:</b> ", item$sheet, "<br>",
             "<b>Column:</b> ", item$column, "<br>",
             "<b>Missing markers:</b> ", paste(item$missing_markers, collapse = ", "), 
             "<br><br>"
           )
         }
-        
         showModal(modalDialog(
           title = "⚠️ Warning: Some markers are not found in Seurat object",
-          HTML(paste0(
-            msg,
-            "<i>If you proceed, these markers will be automatically ignored in downstream analysis.</i>"
-          )),
+          HTML(warning_msg),
           easyClose = TRUE
         ))
       }
-      
+      file_info <- list(
+        name = input$upload_excel$name,
+        datapath = input$upload_excel$datapath,
+        size = input$upload_excel$size,
+        type = input$upload_excel$type
+      )
+      uploaded_file_info(file_info)
       showNotification("File uploaded successfully!", type = "message")
       
     }, error = function(e) {
       showNotification(paste("Error:", e$message), type = "error")
+      uploaded_filename(NULL)
       file.remove(input$upload_excel$datapath)
     })
-    
   })
   
   # SEARCH RESOLUTION BUTTON
@@ -2108,7 +2546,7 @@ Details:", e$message))
   observeEvent(input$update_umap_btn_ui, {
     req(seuratObj(), status$clustered, input$umap_dist)
     
-    if (input$umap_dist >= 0.01 && input$umap_dist <= 1.0) {
+    if (input$umap_dist >= 0.001 && input$umap_dist <= 1.0) {
       showModal(modalDialog("Updating UMAP with new min.dist...", footer = NULL, easyClose = FALSE))
       
       tryCatch({
@@ -2121,7 +2559,7 @@ Details:", e$message))
         title <- paste0(
           base_name,
           ", resolution: ", input$resolution,
-          ", min_dist: ", input$umap_dist %||% 0.3,
+          ", min_dist: ", input$umap_dist %||% min_dist_default(),
           if (harmony_state()) ", Harmony" else ""
         )
         
@@ -2161,41 +2599,7 @@ Details:", e$message))
   output$cluster_table_ui <- renderPlot({
     req(seuratObj())
     
-    get_cluster_summary_table <- function(seurat_obj) {
-      all_cells <- seurat_obj@meta.data %>%
-        select(seurat_clusters, counts = nCount_RNA, genes = nFeature_RNA) %>%
-        group_by(seurat_clusters) %>%
-        summarise(
-          ncells = n(),
-          avg.counts = as.integer(round(mean(counts))),
-          avg.genes = as.integer(round(mean(genes)))
-        ) %>%
-        ungroup()
-      
-      result <- all_cells %>%
-        mutate(all = sum(ncells),
-               cluster = as.character(seurat_clusters),
-               pct = round(100 * ncells / all, 2)) %>%
-        select(cluster, ncells, pct, avg.counts, avg.genes)
-      
-      result <- bind_rows(
-        result,
-        result %>%
-          summarise(
-            cluster = "total",
-            ncells = sum(ncells),
-            pct = sum(pct),
-            avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
-            avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA)))
-          )
-      )
-      
-      return(result)
-    }
-    
-    df <- get_cluster_summary_table(seuratObj())
-    
-    colnames(df) <- c("cluster", "ncell", "pct", "avg.counts", "avg.genes")
+    df <- table_data()
     tg <- gridExtra::tableGrob(
       df,
       rows = NULL,
@@ -2210,7 +2614,6 @@ Details:", e$message))
         )
       )
     )
-    table_data(df)
     grid::grid.newpage()
     grid::grid.draw(tg)
   })
@@ -2237,15 +2640,17 @@ Details:", e$message))
   })
   
   output$cluster_plot_ui <- renderUI({
+    height_heatmap <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){400}else{length(unique(heatmap_plot()$data$cluster))*40}
+
     tagList(
       div(style = "display: inline-block; vertical-align: top; margin-left:30px; font-weight: bold;",fluidRow(textOutput("plot_title"))),
       fluidRow(
         column(4,
-               plotOutput("cluster_umap_ui", height = "400px")),
+               plotOutput("cluster_umap_ui", height = height_heatmap)),
         column(3,
-               plotOutput("cluster_table_ui", height = "400px")),
+               plotOutput("cluster_table_ui", height = height_heatmap)),
         column(5,
-               plotOutput("cluster_heatmap_ui", height = "400px"))
+               plotOutput("cluster_heatmap_ui", height = height_heatmap))
       ),
       hr(),
       fluidRow( 
@@ -2278,7 +2683,7 @@ Details:", e$message))
   # DOWNLOAD CLUSTER PLOTS
   output$download_cluster_plots <- downloadHandler(
     filename = function() {
-      paste("Cluster_Plots_", Sys.Date(), ".zip", sep = "")
+      paste("Cluster_Plots_", file_path_sans_ext(basename(input$data_path)), Sys.Date(), ".zip", sep = "")
     },
     content = function(file) {
       temp_dir <- tempdir()
@@ -2286,68 +2691,7 @@ Details:", e$message))
       heatmap_file <- file.path(temp_dir, "Cluster_Heatmap.pdf")
       dotplot1_file <- file.path(temp_dir, "Cluster_Dotplot1.pdf")
       dotplot2_file <- file.path(temp_dir, "Cluster_Dotplot2.pdf")
-      combined_file <- file.path(temp_dir, "Cluster_Combined.pdf")
-      
-      create_combined_cluster_plot_patchwork <- function(umap_plot, table_data, heatmap_plot, dotplot1 = NULL, dotplot2 = NULL, resolution) {
-        
-        table_plot <- function(table_data) {
-          if (is.null(table_data)) return(ggplot() + theme_void())
-          
-          table_grob <- gridExtra::tableGrob(
-            table_data,
-            rows = NULL,
-            theme = gridExtra::ttheme_minimal(
-              base_size = 12,
-              padding = unit(c(2, 2), "mm")
-            )
-          )
-          
-          ggplot() + 
-            annotation_custom(table_grob) + 
-            theme_void() +
-            theme(plot.margin = margin(5, 5, 5, 5))
-        }
-        
-        cluster_n <- sum(table_data$cluster != "total", na.rm = TRUE)
-        top_row <- (umap_plot | table_plot(table_data) | heatmap_plot) + 
-          plot_layout(widths = c(7, 4, 7))
-        
-        title_plot <- ggplot() +
-          annotate("text", x = 0.5, y = 0.5, 
-                   label = input$title_for_download %||% plot_title(),
-                   size = 8,
-                   hjust = 0.5, vjust = 0.5) +
-          theme_void() +
-          theme(
-            plot.margin = margin(5, 5, 5, 5),
-            plot.background = element_rect(fill = "white", color = NA)
-          )
-        combined_plot <- title_plot / top_row
-        
-        bottom_plots <- list()
-        
-        if (!is.null(dotplot1)) {
-          bottom_plots[[length(bottom_plots) + 1]] <- dotplot1
-        }
-        if (!is.null(dotplot2)) {
-          bottom_plots[[length(bottom_plots) + 1]] <- dotplot2
-        }
-        
-        if (length(bottom_plots) > 0) {
-          for (plot in bottom_plots) {
-            combined_plot <- combined_plot / plot
-          }
-        }
-        
-        n_parts <- 1 + 1 + length(bottom_plots)  
-        heights <- c(0.15, 2, rep(1.5, length(bottom_plots)))
-        
-        combined_plot <- combined_plot + 
-          plot_layout(heights = heights[1:n_parts], ncol = 1)
-        
-        return(combined_plot)
-      }
-      
+      combined_file <- file.path(temp_dir, paste0(input$title_for_download,".pdf"))
       combined_plot <- create_combined_cluster_plot_patchwork(
         umap_plot(),
         table_data(),
@@ -2356,9 +2700,10 @@ Details:", e$message))
         dotplot2_plot(),
         resolution = input$resolution
       )
-      
-      ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = 8)
+      height_heatmap <- length(unique(heatmap_plot()$data$cluster))*0.8
+      ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = height_heatmap)
       ggsave(umap_file, plot = umap_plot(), width = 7, height = 8)
+      height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
       ggsave(combined_file, plot = combined_plot, width = 18, height = 20)
       
       if (!is.null(dotplot1_plot())) {
@@ -2381,83 +2726,41 @@ Details:", e$message))
     }
   )
   
-  # SAMPLE SUBSET AND RENAME UI
   output$sample_subset_rename_ui <- renderUI({
-    req(seuratObj())
-    vals <- unique(Idents(seuratObj()))
-    vals <- vals[order(as.numeric(gsub(".*\\((\\d+)\\).*", "\\1", vals)))]
-    
+    req(seuratObj(),input$sample_select)
+    vals <- sort(unique(seuratObj()@meta.data[[input$sample_select]]))
+
     tagList(
-      lapply(seq_along(vals), function(i) {
-        val <- vals[i]
+      lapply(vals, function(val) {
         fluidRow(
-          column(
-            4,
-            checkboxInput(
-              paste0("sample_cb_", val),
-              label = paste0(i - 1, ": ", val),
-              value = TRUE
-            )
+          column(4,
+                 checkboxInput(paste0("sample_cb_", val), label = val, value = TRUE)
           ),
-          column(
-            8,
-            textInput(
-              paste0("sample_rename_", val),
-              label = NULL,
-              value = val,
-              placeholder = "New name"
-            )
+          column(8,
+                 textInput(paste0("sample_rename_", val), label = NULL, value = val,
+                           placeholder = val)
           )
         )
-      })
-    )
+      }))
+  })
+  output$cluster_subset_rename_ui <- renderUI({
+    req(seuratObj())
+    vals <- sort(unique(seuratObj()@meta.data[[current_ident()]]))
+    
+    tagList(
+      lapply(vals, function(val) {
+        fluidRow(
+          column(4,
+                 checkboxInput(paste0("cluster_cb_", val), label = val, value = TRUE)
+          ),
+          column(8,
+                 textInput(paste0("cluster_rename_", val), label = NULL, value = val,
+                           placeholder = val)
+          )
+        )
+      }))
   })
   
-  # RENAMING BUTTON
-  observeEvent(input$rename_btn_ui,{
-    req(seuratObj())
-    seurat_object <- seuratObj()
-    get_selected_values <- function(obj, col, prefix) {
-      vals <- as.character(unique(obj@meta.data[[col]]))
-      selected <- sapply(vals, function(val) {
-        if(isTRUE(input[[paste0(prefix, "_", val)]])) val else NA
-      })
-      na.omit(selected)
-    }
-    
-    apply_renaming <- function(obj, vals, prefix) {
-      ident_vec <- as.character(Idents(obj))
-      for (val in vals) {
-        new_name <- input[[paste0(prefix, "_", val)]]
-        if (!is.null(new_name) && nzchar(new_name)) {
-          ident_vec[ident_vec == val] <- new_name
-        }
-      }
-      Idents(obj) <- ident_vec
-      return(obj)
-    }
-    tryCatch({
-      # Get selected values with validation
-      sample_vals <- get_selected_values(seuratObj(), current_ident(), "sample_cb")
-      sample_table <- data.frame(
-        `Selected Sample` = sample_vals,
-        `Renamed Value` = sapply(sample_vals, function(val) {
-          new_name <- input[[paste0("sample_rename_", val)]]
-          ifelse(!is.null(new_name) && nzchar(new_name), new_name, val)
-        }),
-        check.names = FALSE
-      )
-      
-      seurat_object <- apply_renaming(seurat_object, sample_vals, "sample_rename")
-      
-      # Update reactive values
-      seuratObj(seurat_object)
-      showNotification("Renaming completed successfully!", type = "message")
-      
-    }, error = function(e) {
-      showNotification(paste("Error:", e$message), type = "error")
-    })
-  })
   
   # SUBSET BUTTON
   observeEvent(input$subset_btn_ui, {
@@ -2499,20 +2802,15 @@ Details:", e$message))
     )
   })
   
-  # CONFIRM SUBSET BUTTON
   observeEvent(input$confirm_subset, {
     req(seuratObj())
-    showModal(
-      modalDialog(
-        title = "Please wait",
-        tagList(
-          p("Subsetting data..."),
-          p("The waiting time depends on the size of the dataset and number of selected samples.")
-        ),
-        footer = NULL, easyClose = FALSE
-      )
-    )
-    seuratobj <- seuratObj()
+    showModal(modalDialog(
+      title = "Processing Subset",
+      "Applying subset and rename operations...",
+      footer = NULL,
+      easyClose = FALSE
+    ))
+    
     tryCatch({
       get_selected_values <- function(obj, col, prefix) {
         vals <- as.character(unique(obj@meta.data[[col]]))
@@ -2521,21 +2819,48 @@ Details:", e$message))
         })
         na.omit(selected)
       }
-      sample_vals <- get_selected_values(seuratObj(), current_ident(), "sample_cb")
+      apply_renaming <- function(obj, col, vals, prefix) {
+        for(val in vals) {
+          new_name <- input[[paste0(prefix, "_", val)]]
+          if(!is.null(new_name) && nzchar(new_name)) {
+            obj@meta.data[[col]] <- as.character(obj@meta.data[[col]])
+            obj@meta.data[[col]][obj@meta.data[[col]] == val] <- new_name
+          }
+        }
+        return(obj)
+      }
       
-      validate(
-        need(length(sample_vals) > 0, "Please select at least one sample")
-      )
-      keep_cells <- names(Idents(seuratobj))[(Idents(seuratobj) %in% sample_vals) ]
-      validate(
-        need(length(keep_cells) > 0, "No cells match selected samples")
-      )
-      seuratobj <- subset(seuratobj, cells = keep_cells)
-      seuratObj(seuratobj)
+      # Get selected values with validation
+      sample_vals <- get_selected_values(seuratObj(), input$sample_select, "sample_cb")
+      cluster_vals <- get_selected_values(seuratObj(), current_ident(), "cluster_cb")
       
-      showNotification("Subsetting completed successfully!", type = "message")
+      # Validate at least one sample and cluster is selected
+      validate(
+        need(length(sample_vals) > 0, "Please select at least one sample"),
+        need(length(cluster_vals) > 0, "Please select at least one cluster")
+      )
+      
+      # Get intersecting cells with validation
+      sample_cells <- colnames(seuratObj())[seuratObj()@meta.data[[input$sample_select]] %in% sample_vals]
+      cluster_cells <- colnames(seuratObj())[seuratObj()@meta.data[[current_ident()]] %in% cluster_vals]
+      keep_cells <- intersect(sample_cells, cluster_cells)
+
+      validate(
+        need(length(keep_cells) > 0, 
+             "No cells match the selected criteria. Please adjust your subsetting options.")
+      )
+      # Create subset
+      obj_sub <- subset(seuratObj(), cells = keep_cells)
+      
+      # Apply renaming
+      obj_sub <- apply_renaming(obj_sub, input$sample_select, sample_vals, "sample_rename")
+      obj_sub <- apply_renaming(obj_sub, current_ident(), cluster_vals, "cluster_rename")
+      temp_seuratObj(obj_sub)
       removeModal()
+      showNotification("Subset and renaming completed successfully!", type = "message")
+      
     }, error = function(e) {
+      removeModal()
       showNotification(paste("Error:", e$message), type = "error")
     })
   })
@@ -2544,9 +2869,10 @@ Details:", e$message))
   observeEvent(input$confirm_keep_analysis, {
     req(seuratObj())
     tryCatch({
-      
+      if(!is.null(temp_seuratObj())){
+        seuratObj(temp_seuratObj())
+      }
       subset_data_path(input$data_path)
-      
       status$normalized <- FALSE
       status$scaled <- FALSE
       status$pca <- FALSE
@@ -2561,12 +2887,13 @@ Details:", e$message))
       dotplot1_plot(NULL)
       dotplot2_plot(NULL)
       current_ident(NULL)
-      subset_data_path(NULL)
       plot_title(NULL)
       harmony_state(NULL)
       harmony_meta_state(NULL)
       user_nn_dims(NULL)
       uploaded_filename(NULL)
+      temp_seuratObj(NULL)
+      combined_plot <- reactiveVal(NULL)
       shinyjs::runjs("location.reload();")
       removeModal()
     }, error = function(e) {
