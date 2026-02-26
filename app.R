@@ -286,7 +286,7 @@ server <- function(input, output, session) {
                textInput(
                  "save_path",
                  "Input save path on SCC or local file name (use forward slashes (/). The filename should end with '.rds')",
-                 value = file.path(dirname(input$data_path), paste0(plot_title(), "_", Sys.Date(), ".rds")),
+                 value = file.path(dirname(input$data_path), paste0(input$title_for_download, "_", Sys.Date(), ".rds")),
                  width = "100%"
                )
         )
@@ -2687,11 +2687,11 @@ Details:", e$message))
     },
     content = function(file) {
       temp_dir <- tempdir()
-      umap_file <- file.path(temp_dir, "Cluster_UMAP.pdf")
-      heatmap_file <- file.path(temp_dir, "Cluster_Heatmap.pdf")
-      dotplot1_file <- file.path(temp_dir, "Cluster_Dotplot1.pdf")
-      dotplot2_file <- file.path(temp_dir, "Cluster_Dotplot2.pdf")
-      combined_file <- file.path(temp_dir, paste0(input$title_for_download,".pdf"))
+      umap_file <- file.path(temp_dir, paste0("Cluster_UMAP_",input$title_for_download,".pdf"))
+      heatmap_file <- file.path(temp_dir, paste0("Cluster_Heatmap_",input$title_for_download,".pdf"))
+      dotplot1_file <- file.path(temp_dir, paste0("Cluster_Dotplot1_",input$title_for_download,".pdf"))
+      dotplot2_file <- file.path(temp_dir, paste0("Cluster_Dotplot2_",input$title_for_download,".pdf"))
+      combined_file <- file.path(temp_dir, paste0("Cluster_Combined_",input$title_for_download,".pdf"))
       combined_plot <- create_combined_cluster_plot_patchwork(
         umap_plot(),
         table_data(),
