@@ -134,6 +134,7 @@ server <- function(input, output, session) {
   min_dist_default <- reactiveVal(NULL)
   combined_plot <- reactiveVal(NULL)
   uploaded_file_info <- reactiveVal(NULL)
+  sample_ident_analysis_path <- reactiveValues(paths = list())
   # CONTROL STEP STATUS
   status <- reactiveValues(
     normalized = FALSE,
@@ -242,7 +243,7 @@ server <- function(input, output, session) {
     status$clustered <- FALSE
     temp_seuratObj(NULL)
     combined_plot <- reactiveVal(NULL)
-    
+    sample_ident_analysis_path <- reactiveValues(paths = list())
     showNotification("Reset completed. You can now load a new dataset.", type = "message")
   })
   
@@ -804,7 +805,7 @@ server <- function(input, output, session) {
               div(class = "tooltip-divider"),
               div(HTML("\"Metadata column name\" is the name in seurat, which is the identification of cluster.<br>
              Rename the corresponding input box, then select only the desired samples in the checkboxes and click \"subset\".<br>
-             After subsetting, click \"Analysis on Subset Data\". The system will reset ShinyApp and use the subset data as 
+             After subsetting, click \"Subset and Recluster Data\". The system will reset ShinyApp and use the subset data as 
              input for analysis.<br>
              It is recommended to save the data after both renaming and subsetting."))
             )
@@ -1337,6 +1338,7 @@ server <- function(input, output, session) {
         column(6,
                h4(paste0("Cluster: ", current_ident())),
                h4(""),
+               plotOutput("cluster_umap_plot", width = "80%"),
                uiOutput("cluster_subset_rename_ui")  # Combined UI
         ),
         column(6,
@@ -1344,8 +1346,28 @@ server <- function(input, output, session) {
                div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
                    h5("Sample:",style = "font-weight: bold;")),
                div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
-                   selectInput("sample_select", NULL, choices = mdcols))),
-               uiOutput("sample_subset_rename_ui")  # Combined UI
+                   selectInput("sample_select", NULL, choices = mdcols, selected = if(!is.null(input$harmony_metadata)){input$harmony_metadata}else{NULL}))),
+               plotOutput("sample_umap_plot", width = "80%"),
+               uiOutput("sample_subset_rename_ui"),  # Combined UI
+               fluidRow(
+                 div(class = "tooltip-circle",
+                     "?",  
+                     span(class = "tooltip-text", 
+                          div(class = "tooltip-title", "Analyze Individual Samples (No Reclustering)"),
+                          div(class = "tooltip-divider"),
+                          div("12.Clicking \"Analyze Individual Samples (No Reclustering)\" will analyze the selected sample(s)
+                              without reclustering and give the oportunity to \"Download Result\" and print to screen umap,
+                              data table, heatmap, and dotplot for each sample. You can download the results to your computer.
+                              This allows the user to observe the data for each sample within the original dataset. If you want
+                              to recluster and then reanalyze one or more samples individually, select the sample you want and
+                              click on \"Subset & Rename\" button, and then, if desired, \"Save Data\".")
+                     )
+                 ),
+                 div(style = "display: inline-block; vertical-align: top;",
+                     actionButton("sample_ident_analysis", "Analyze Individual Samples (No Reclustering)", width = "100%", class = "btn-success")),
+                 div(style = "display: inline-block; vertical-align: top; margin-left:20px;",
+                     uiOutput("download_ident_sample_ui"))
+               )
         )
         ),
       h5("Attention: Please using \"SAVE DATA\" to save your current result before subset!!!", style = "font-weight: bold; color:red;"),
@@ -1355,11 +1377,21 @@ server <- function(input, output, session) {
                        width = "200px", class = "btn-danger")),
       div(style = "display: inline-block; vertical-align: top; margin-left:30px;",
           conditionalPanel(condition = "input.confirm_subset > 0",
-            actionButton("keep_analysis", "Analysis on Subset Data",
+            actionButton("keep_analysis", "Subset and Recluster Data",
                        width = "200px", class = "btn-success")))
     ))
   })
-  
+  output$download_ident_sample_ui <- renderUI({
+    if (!is.null(sample_ident_analysis_path$paths) && length(sample_ident_analysis_path$paths) > 0) {
+      fluidRow(downloadButton("download_ident_sample_analysis", "Download Result", 
+                     style = "background-color: #4CAF50; color: white;"),
+               actionButton("print_ident_sample_analysis", "Print on Screen", 
+                            class = "btn-warning")
+      )
+    } else {
+      NULL
+    }
+  })
   # SCC JOB MODAL
   observeEvent(input$search_on_scc, {
     showModal(
@@ -1832,7 +1864,7 @@ server <- function(input, output, session) {
     })
   })
   
-  create_combined_cluster_plot_patchwork <- function(umap_plot, table_data, heatmap_plot, dotplot1 = NULL, dotplot2 = NULL, resolution) {
+  create_combined_cluster_plot_patchwork <- function(umap_plot, table_data, heatmap_plot, dotplot1 = NULL, dotplot2 = NULL, title = NA) {
     
     table_plot <- function(table_data) {
       if (is.null(table_data)) return(ggplot() + theme_void())
@@ -1855,10 +1887,10 @@ server <- function(input, output, session) {
     cluster_n <- sum(table_data$cluster != "total", na.rm = TRUE)
     top_row <- (umap_plot | table_plot(table_data) | heatmap_plot) + 
       plot_layout(widths = c(4, 3, 5))
-    
+    title_pdf <- if(is.na(title)){input$title_for_download %||% plot_title()}else{title}
     title_plot <- ggplot() +
       annotate("text", x = 0.5, y = 0.5, 
-               label = input$title_for_download %||% plot_title(),
+               label = title_pdf,
                size = 8,
                hjust = 0.5, vjust = 0.5) +
       theme_void() +
@@ -1893,6 +1925,264 @@ server <- function(input, output, session) {
     return(combined_plot)
   }
   
+  # Annotate clusters if gene markers provided
+  FindCellTypesByMarkers <- function(sobj, biomarkers = NULL) {
+    if (is.null(biomarkers)) {
+      stop("parameter biomarkers should be specified (now NULL)")
+    }
+    
+    DefaultAssay(sobj) <- "RNA"
+    
+    clusters <- levels(Idents(sobj))
+    all_genes <- unique(unlist(biomarkers))
+    
+    fc_all <- purrr::map_dfr(clusters, function(clust) {
+      fc <- tryCatch({
+        FoldChange(sobj, ident.1 = clust, features = all_genes, assay = "RNA", slot = "data")
+      }, error = function(e) {
+        data.frame(avg_log2FC = rep(NA_real_, length(all_genes)), row.names = all_genes)
+      })
+      
+      fc_df <- as.data.frame(fc)
+      fc_df$gene <- rownames(fc_df)
+      fc_df$cluster <- clust
+      fc_df[, c("cluster", "gene", "avg_log2FC")]
+    })
+    
+    celltypes_ordered <- names(biomarkers)
+    
+    scores <- purrr::map_dfr(seq_along(biomarkers), function(i) {
+      celltype <- celltypes_ordered[i]
+      genes <- biomarkers[[i]]
+      tmp <- fc_all %>%
+        filter(gene %in% genes) %>%
+        group_by(cluster) %>%
+        summarise(score = mean(avg_log2FC, na.rm = TRUE), .groups = "drop") %>%
+        mutate(celltype = celltype)
+      tmp
+    })
+    
+    scores <- scores %>%
+      mutate(
+        celltype = factor(celltype, levels = celltypes_ordered),
+        cluster = factor(cluster, levels = clusters)
+      )
+    
+    scores <- tidyr::expand(scores, cluster, celltype) %>%
+      left_join(scores, by = c("cluster", "celltype")) %>%
+      mutate(score = coalesce(score, 0)) %>%
+      arrange(cluster, celltype)
+    
+    labels <- scores %>%
+      group_by(cluster) %>%
+      summarise(prediction = ifelse(max(score) > 0, as.character(celltype[which.max(score)]), "Unknown"), .groups = "drop") %>%
+      mutate(
+        prediction = paste0(prediction, "(", cluster, ")"),
+        cluster = factor(cluster, levels = clusters)
+      ) %>%
+      arrange(cluster)
+    
+    new_labels <- labels$prediction
+    names(new_labels) <- labels$cluster
+    
+    old_labels <- setNames(names(new_labels), new_labels)
+    
+    list(new_labels = new_labels, old_labels = old_labels, heatmap_table = scores)
+  }
+  
+  # Convert Excel to Marker List
+  
+  convert_marker_excel_to_list <- function(path, sheet_name, allowed_genes = NULL) {
+    tryCatch({
+      df <- read.xlsx(path, sheet = sheet_name, colNames = TRUE)
+      
+      if (is.null(df) || ncol(df) == 0) {
+        stop(paste0("The '", sheet_name, "' sheet appears empty or has no valid columns."))
+      }
+      
+      if (any(is.na(names(df))) || any(names(df) == "")) {
+        stop(paste0("Some columns in '", sheet_name, "' have no names. Please check header row."))
+      }
+      
+      biomarkers <- list()
+      
+      for (col in names(df)) {
+        genes <- df[[col]]
+        genes <- genes[!is.na(genes) & genes != ""]
+        genes <- as.character(genes)
+        
+        if (!is.null(allowed_genes)) {
+          genes <- genes[genes %in% allowed_genes]
+        }
+        
+        if (length(genes) > 0) {
+          biomarkers[[col]] <- genes
+        }
+      }
+      
+      if (length(biomarkers) == 0) {
+        stop(paste0("No valid markers found in '", sheet_name, "' sheet."))
+      }
+      
+      return(biomarkers)
+      
+    }, error = function(e) {
+      stop(paste("Failed to convert Excel to marker list. Please check Excel format.
+Details:", e$message))
+    })
+  }
+  
+  # Create Heatmap Function
+  CreateCellTypesHeatmap <- function(df, labels_text_size = 6, xaxis_text_size = 12, yaxis_text_size = 12, rotate_x = FALSE){
+    
+    clusters_numeric <- sort(as.numeric(levels(df$cluster)), decreasing = TRUE)
+    df$cluster <- factor(df$cluster,
+                         levels = as.character(clusters_numeric),
+                         ordered = TRUE)
+    
+    tmp <- ggplot(df, aes(x = celltype, y = as.factor(cluster))) +
+      geom_raster(aes(fill = score))+
+      scale_fill_gradient2(low = "blue", mid="white", high = "tomato") +
+      geom_text(aes(label=round(score,1)), size = labels_text_size) +
+      scale_x_discrete(position = "top") +
+      ylab("Clusters") +
+      theme_minimal() +
+      theme(legend.title = element_blank(),
+            legend.position = "bottom",
+            axis.text.x = element_text(color = "black", size = xaxis_text_size),
+            axis.text.y = element_text(color = "black", size = yaxis_text_size)) +
+      coord_fixed()
+    
+    if (rotate_x){
+      tmp <- tmp + theme(axis.text.x = element_text(angle = 90, hjust=0, color = "black", size = xaxis_text_size),
+                         axis.text.x.top = element_text(vjust = 0.5))
+    }
+    tmp
+  }
+  
+  custom_dotplot <- function(seurat_obj, gene_list, assay = "RNA", title = NULL, cols = c("lightgrey", "blue")) {
+    
+    all_genes <- unlist(gene_list, use.names = FALSE)
+    DefaultAssay(seurat_obj) <- assay
+    clusters <- unique(Idents(seurat_obj))
+    results <- data.frame()
+    
+    for(cluster in clusters) {
+      cluster_cells <- WhichCells(seurat_obj, idents = cluster)
+      cluster_data <- GetAssayData(seurat_obj, assay = assay, slot = "data")[all_genes, cluster_cells, drop = FALSE]
+      
+      for(gene in all_genes) {
+        if(gene %in% rownames(cluster_data)) {
+          avg_exp <- mean(expm1(cluster_data[gene, ]))
+          pct_exp <- sum(cluster_data[gene, ] > 0) / length(cluster_cells) * 100
+          results <- rbind(results, data.frame(
+            gene = gene,
+            cluster = cluster,
+            avg_exp = avg_exp,
+            pct_exp = pct_exp
+          ))
+        }
+      }
+    }
+    
+    results <- results %>%
+      group_by(gene) %>%
+      mutate(avg_exp_scaled = scale(avg_exp)[,1]) %>%
+      ungroup()
+    clusters_numeric <- sort(as.numeric(unique(results$cluster)), decreasing = TRUE)
+    results$cluster <- factor(results$cluster, 
+                              levels = as.character(clusters_numeric),
+                              ordered = TRUE)
+    
+    gene_groups <- data.frame()
+    for(group_name in names(gene_list)) {
+      group_genes <- gene_list[[group_name]]
+      gene_groups <- rbind(gene_groups, 
+                           data.frame(gene = group_genes, group = group_name))
+    }
+    
+    gene_groups$group <- factor(gene_groups$group, levels = names(gene_list))
+    
+    results <- results %>%
+      left_join(gene_groups, by = "gene")
+    
+    results$gene <- factor(results$gene, levels = all_genes)
+    
+    p <- ggplot(results, aes(x = gene, y = cluster)) +
+      geom_point(aes(size = pct_exp, color = avg_exp_scaled)) +
+      scale_color_gradientn(
+        colors = cols,
+        name = "Avg Exp",
+        guide = guide_colorbar(barwidth = 5, barheight = 0.5)
+      ) +
+      scale_size(
+        range = c(0, 6),  
+        name = "Per Exp",
+        limits = c(0, 100),
+        breaks = c(0, 25, 50, 75, 100)
+      ) +
+      facet_grid(. ~ group, scales = "free_x", space = "free_x") +
+      theme_cowplot() +
+      theme(
+        axis.text.x = element_text(
+          angle = 90, 
+          hjust = 1, 
+          vjust = 0.5,
+          size = 12
+        ),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.direction = "horizontal", 
+        legend.position = "bottom",
+        legend.box = "horizontal", 
+        legend.justification = "center",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 9),
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        panel.spacing.y = unit(0.1, "lines"),  
+        panel.spacing.x = unit(1, "lines"),   
+        strip.text = element_text(face = "bold", size = 12),
+        strip.background = element_rect(fill = "grey95", color = NA)
+      ) +
+      labs(x = "Genes", y = "Clusters", title = title)
+    
+    return(p)
+  }
+  
+  get_cluster_summary_table <- function(seurat_obj) {
+    all_cells <- seurat_obj@meta.data %>%
+      select(shiny_clusters, counts = nCount_RNA, genes = nFeature_RNA) %>%
+      group_by(shiny_clusters) %>%
+      summarise(
+        ncells = n(),
+        avg.counts = as.integer(round(mean(counts))),
+        avg.genes = as.integer(round(mean(genes)))
+      ) %>%
+      ungroup()
+    
+    result <- all_cells %>%
+      mutate(all = sum(ncells),
+             cluster = as.character(shiny_clusters),
+             pct = round(100 * ncells / all, 2)) %>%
+      select(cluster, ncells, pct, avg.counts, avg.genes)
+    
+    result <- bind_rows(
+      result,
+      result %>%
+        summarise(
+          cluster = "total",
+          ncells = sum(ncells),
+          pct = sum(pct),
+          avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
+          avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA)))
+        )
+    )
+    
+    return(result)
+  }
+  
   # CLUSTERING STEP SERVER
   observeEvent(input$clustering_btn_ui,{
     req(seuratObj())
@@ -1906,232 +2196,6 @@ server <- function(input, output, session) {
       sobj <- FindClusters(sobj, resolution = input$resolution, verbose = FALSE)
       Idents(sobj) <- factor(Idents(sobj), 
                              levels = sort(as.numeric(levels(Idents(sobj)))))
-      # Annotate clusters if gene markers provided
-      FindCellTypesByMarkers <- function(sobj, biomarkers = NULL) {
-        if (is.null(biomarkers)) {
-          stop("parameter biomarkers should be specified (now NULL)")
-        }
-        
-        DefaultAssay(sobj) <- "RNA"
-        
-        clusters <- levels(Idents(sobj))
-        all_genes <- unique(unlist(biomarkers))
-        
-        fc_all <- purrr::map_dfr(clusters, function(clust) {
-          fc <- tryCatch({
-            FoldChange(sobj, ident.1 = clust, features = all_genes, assay = "RNA", slot = "data")
-          }, error = function(e) {
-            data.frame(avg_log2FC = rep(NA_real_, length(all_genes)), row.names = all_genes)
-          })
-          
-          fc_df <- as.data.frame(fc)
-          fc_df$gene <- rownames(fc_df)
-          fc_df$cluster <- clust
-          fc_df[, c("cluster", "gene", "avg_log2FC")]
-        })
-        
-        celltypes_ordered <- names(biomarkers)
-        
-        scores <- purrr::map_dfr(seq_along(biomarkers), function(i) {
-          celltype <- celltypes_ordered[i]
-          genes <- biomarkers[[i]]
-          tmp <- fc_all %>%
-            filter(gene %in% genes) %>%
-            group_by(cluster) %>%
-            summarise(score = mean(avg_log2FC, na.rm = TRUE), .groups = "drop") %>%
-            mutate(celltype = celltype)
-          tmp
-        })
-        
-        scores <- scores %>%
-          mutate(
-            celltype = factor(celltype, levels = celltypes_ordered),
-            cluster = factor(cluster, levels = clusters)
-          )
-        
-        scores <- tidyr::expand(scores, cluster, celltype) %>%
-          left_join(scores, by = c("cluster", "celltype")) %>%
-          mutate(score = coalesce(score, 0)) %>%
-          arrange(cluster, celltype)
-        
-        labels <- scores %>%
-          group_by(cluster) %>%
-          summarise(prediction = ifelse(max(score) > 0, as.character(celltype[which.max(score)]), "Unknown"), .groups = "drop") %>%
-          mutate(
-            prediction = paste0(prediction, "(", cluster, ")"),
-            cluster = factor(cluster, levels = clusters)
-          ) %>%
-          arrange(cluster)
-        
-        new_labels <- labels$prediction
-        names(new_labels) <- labels$cluster
-        
-        old_labels <- setNames(names(new_labels), new_labels)
-        
-        list(new_labels = new_labels, old_labels = old_labels, heatmap_table = scores)
-      }
-      
-      # Convert Excel to Marker List
-      
-      convert_marker_excel_to_list <- function(path, sheet_name, allowed_genes = NULL) {
-        tryCatch({
-          df <- read.xlsx(path, sheet = sheet_name, colNames = TRUE)
-          
-          if (is.null(df) || ncol(df) == 0) {
-            stop(paste0("The '", sheet_name, "' sheet appears empty or has no valid columns."))
-          }
-          
-          if (any(is.na(names(df))) || any(names(df) == "")) {
-            stop(paste0("Some columns in '", sheet_name, "' have no names. Please check header row."))
-          }
-          
-          biomarkers <- list()
-          
-          for (col in names(df)) {
-            genes <- df[[col]]
-            genes <- genes[!is.na(genes) & genes != ""]
-            genes <- as.character(genes)
-            
-            if (!is.null(allowed_genes)) {
-              genes <- genes[genes %in% allowed_genes]
-            }
-            
-            if (length(genes) > 0) {
-              biomarkers[[col]] <- genes
-            }
-          }
-          
-          if (length(biomarkers) == 0) {
-            stop(paste0("No valid markers found in '", sheet_name, "' sheet."))
-          }
-          
-          return(biomarkers)
-          
-        }, error = function(e) {
-          stop(paste("Failed to convert Excel to marker list. Please check Excel format.
-Details:", e$message))
-        })
-      }
-      
-      # Create Heatmap Function
-      CreateCellTypesHeatmap <- function(df, labels_text_size = 6, xaxis_text_size = 12, yaxis_text_size = 12, rotate_x = FALSE){
-        
-        clusters_numeric <- sort(as.numeric(levels(df$cluster)), decreasing = TRUE)
-        df$cluster <- factor(df$cluster,
-                             levels = as.character(clusters_numeric),
-                             ordered = TRUE)
-        
-        tmp <- ggplot(df, aes(x = celltype, y = as.factor(cluster))) +
-          geom_raster(aes(fill = score))+
-          scale_fill_gradient2(low = "blue", mid="white", high = "tomato") +
-          geom_text(aes(label=round(score,1)), size = labels_text_size) +
-          scale_x_discrete(position = "top") +
-          ylab("Clusters") +
-          theme_minimal() +
-          theme(legend.title = element_blank(),
-                legend.position = "bottom",
-                axis.text.x = element_text(color = "black", size = xaxis_text_size),
-                axis.text.y = element_text(color = "black", size = yaxis_text_size)) +
-          coord_fixed()
-        
-        if (rotate_x){
-          tmp <- tmp + theme(axis.text.x = element_text(angle = 90, hjust=0, color = "black", size = xaxis_text_size),
-                             axis.text.x.top = element_text(vjust = 0.5))
-        }
-        tmp
-      }
-      
-      custom_dotplot <- function(seurat_obj, gene_list, assay = "RNA", title = NULL, cols = c("lightgrey", "blue")) {
-        
-        all_genes <- unlist(gene_list, use.names = FALSE)
-        DefaultAssay(seurat_obj) <- assay
-        clusters <- unique(Idents(seurat_obj))
-        results <- data.frame()
-        
-        for(cluster in clusters) {
-          cluster_cells <- WhichCells(seurat_obj, idents = cluster)
-          cluster_data <- GetAssayData(seurat_obj, assay = assay, slot = "data")[all_genes, cluster_cells, drop = FALSE]
-          
-          for(gene in all_genes) {
-            if(gene %in% rownames(cluster_data)) {
-              avg_exp <- mean(expm1(cluster_data[gene, ]))
-              pct_exp <- sum(cluster_data[gene, ] > 0) / length(cluster_cells) * 100
-              results <- rbind(results, data.frame(
-                gene = gene,
-                cluster = cluster,
-                avg_exp = avg_exp,
-                pct_exp = pct_exp
-              ))
-            }
-          }
-        }
-        
-        results <- results %>%
-          group_by(gene) %>%
-          mutate(avg_exp_scaled = scale(avg_exp)[,1]) %>%
-          ungroup()
-        clusters_numeric <- sort(as.numeric(unique(results$cluster)), decreasing = TRUE)
-        results$cluster <- factor(results$cluster, 
-                                  levels = as.character(clusters_numeric),
-                                  ordered = TRUE)
-        
-        gene_groups <- data.frame()
-        for(group_name in names(gene_list)) {
-          group_genes <- gene_list[[group_name]]
-          gene_groups <- rbind(gene_groups, 
-                               data.frame(gene = group_genes, group = group_name))
-        }
-        
-        gene_groups$group <- factor(gene_groups$group, levels = names(gene_list))
-        
-        results <- results %>%
-          left_join(gene_groups, by = "gene")
-        
-        results$gene <- factor(results$gene, levels = all_genes)
-        
-        p <- ggplot(results, aes(x = gene, y = cluster)) +
-          geom_point(aes(size = pct_exp, color = avg_exp_scaled)) +
-          scale_color_gradientn(
-            colors = cols,
-            name = "Avg Exp",
-            guide = guide_colorbar(barwidth = 5, barheight = 0.5)
-          ) +
-          scale_size(
-            range = c(0, 6),  
-            name = "Per Exp",
-            limits = c(0, 100),
-            breaks = c(0, 25, 50, 75, 100)
-          ) +
-          facet_grid(. ~ group, scales = "free_x", space = "free_x") +
-          theme_cowplot() +
-          theme(
-            axis.text.x = element_text(
-              angle = 90, 
-              hjust = 1, 
-              vjust = 0.5,
-              size = 12
-            ),
-            axis.text.y = element_text(size = 12),
-            axis.title.x = element_blank(),
-            axis.title.y = element_blank(),
-            legend.direction = "horizontal", 
-            legend.position = "bottom",
-            legend.box = "horizontal", 
-            legend.justification = "center",
-            legend.text = element_text(size = 8),
-            legend.title = element_text(size = 9),
-            panel.grid.major = element_blank(),  
-            panel.grid.minor = element_blank(),  
-            panel.spacing.y = unit(0.1, "lines"),  
-            panel.spacing.x = unit(1, "lines"),   
-            strip.text = element_text(face = "bold", size = 12),
-            strip.background = element_rect(fill = "grey95", color = NA)
-          ) +
-          labs(x = "Genes", y = "Clusters", title = title)
-        
-        return(p)
-      }
-      
       # Read Gene Markers
         path <- if (!is.null(input$upload_excel)) {
           input$upload_excel$datapath
@@ -2159,7 +2223,7 @@ Details:", e$message))
         tryCatch({
           biomarkers_dotplot2 <- convert_marker_excel_to_list(path, sheet_name = "DOTPLOT2", allowed_genes)
         }, error = function(e) {
-          biomarkers_dotplot1 <- NULL
+          biomarkers_dotplot2 <- NULL
         })
       
         if (!is.null(biomarkers_dotplot1)) {
@@ -2202,41 +2266,10 @@ Details:", e$message))
       
       umap_plot(DimPlot(sobj, reduction = "umap", label = FALSE) + 
                   ggtitle("") +
-                  theme(plot.title = element_text(face = "bold", size = 10))+
+                  theme(plot.title = element_text(face = "bold", size = 10),
+                        legend.text = element_text(size = 10))+
                   guides(color = guide_legend(ncol = 1, 
                                               override.aes = list(size = 3))))
-      
-      get_cluster_summary_table <- function(seurat_obj) {
-        all_cells <- seurat_obj@meta.data %>%
-          select(shiny_clusters, counts = nCount_RNA, genes = nFeature_RNA) %>%
-          group_by(shiny_clusters) %>%
-          summarise(
-            ncells = n(),
-            avg.counts = as.integer(round(mean(counts))),
-            avg.genes = as.integer(round(mean(genes)))
-          ) %>%
-          ungroup()
-        
-        result <- all_cells %>%
-          mutate(all = sum(ncells),
-                 cluster = as.character(shiny_clusters),
-                 pct = round(100 * ncells / all, 2)) %>%
-          select(cluster, ncells, pct, avg.counts, avg.genes)
-        
-        result <- bind_rows(
-          result,
-          result %>%
-            summarise(
-              cluster = "total",
-              ncells = sum(ncells),
-              pct = sum(pct),
-              avg.counts = as.integer(round(mean(seurat_obj@meta.data$nCount_RNA))),
-              avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA)))
-            )
-        )
-        
-        return(result)
-      }
       
       df <- get_cluster_summary_table(sobj)
       
@@ -2247,8 +2280,7 @@ Details:", e$message))
         table_data(),
         heatmap_plot(),
         dotplot1_plot(),
-        dotplot2_plot(),
-        resolution = input$resolution
+        dotplot2_plot()
       )
       combined_plot(combined_plot)
       
@@ -2579,7 +2611,8 @@ Details:", e$message))
         }
         umap_plot(DimPlot(seuratObj(), reduction = "umap", label = FALSE) + 
                     ggtitle("") +
-                    theme(plot.title = element_text(face = "bold", size = 10)))
+                    theme(plot.title = element_text(face = "bold", size = 10),
+                          legend.text = element_text(size = 10)))
         removeModal()
         showNotification("UMAP updated with new min.dist!", type = "message")
       }, error = function(e) {
@@ -2697,14 +2730,13 @@ Details:", e$message))
         table_data(),
         heatmap_plot(),
         dotplot1_plot(),
-        dotplot2_plot(),
-        resolution = input$resolution
+        dotplot2_plot()
       )
       height_heatmap <- length(unique(heatmap_plot()$data$cluster))*0.8
       ggsave(heatmap_file, plot = heatmap_plot(), width = 7, height = height_heatmap)
       ggsave(umap_file, plot = umap_plot(), width = 7, height = 8)
       height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
-      ggsave(combined_file, plot = combined_plot, width = 18, height = 20)
+      ggsave(combined_file, plot = combined_plot, width = 18, height = height_combined)
       
       if (!is.null(dotplot1_plot())) {
         ggsave(dotplot1_file, plot = dotplot1_plot(), width = 18, height = 6)
@@ -2865,6 +2897,263 @@ Details:", e$message))
     })
   })
   
+  output$cluster_umap_plot <- renderPlot({
+    req(seuratObj(), current_ident())
+    sobj <- if(!is.null(temp_seuratObj())){temp_seuratObj()}else{seuratObj()}
+    DimPlot(sobj, reduction = "umap", label = FALSE, group.by = current_ident()) + 
+      ggtitle("") +
+      theme(
+        plot.title = element_text(face = "bold", size = 10),
+        legend.text = element_text(size = 10),
+        axis.text = element_text(size = 8)   
+      )
+  })
+  
+  output$sample_umap_plot <- renderPlot({
+    req(seuratObj(), input$sample_select)
+    sobj <- if(!is.null(temp_seuratObj())){temp_seuratObj()}else{seuratObj()}
+    DimPlot(sobj, reduction = "umap", label = FALSE, group.by = input$sample_select) + 
+      ggtitle("") +
+      theme(plot.title = element_text(face = "bold", size = 10),
+            legend.text = element_text(size = 10),
+            axis.text = element_text(size = 8))
+  })
+  observeEvent(input$sample_ident_analysis, {
+    req(seuratObj())
+    req(input$sample_select)
+    sobj <- if(!is.null(temp_seuratObj())){temp_seuratObj()}else{seuratObj()}
+    showModal(modalDialog(
+      title = "Processing Analysising",
+      "Please wait...",
+      footer = NULL,
+      easyClose = FALSE
+    ))
+    #MARKER
+    get_selected_values <- function(obj, col, prefix) {
+      vals <- as.character(unique(obj@meta.data[[col]]))
+      selected <- sapply(vals, function(val) {
+        if(isTRUE(input[[paste0(prefix, "_", val)]])) val else NA
+      })
+      na.omit(selected)
+    }
+    sample_vals <- get_selected_values(sobj, input$sample_select, "sample_cb")
+    if (length(sample_vals) == 0) {
+      removeModal()
+      showModal(modalDialog(
+        title = "Warning",
+        "Please select at least one sample.",
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+      return(NULL)
+    }
+    pdf_dir <- file.path(tempdir(), "sample_analysis_pdfs")
+    dir.create(pdf_dir, showWarnings = FALSE)
+    
+    pdf_paths <- list()
+    path <- if (!is.null(input$upload_excel)) {
+      input$upload_excel$datapath
+    } else {
+      file.path(getwd(), "Gene_Markers.xlsx")
+    }
+    
+    allowed_genes <- rownames(sobj)
+    tryCatch({
+      biomarkers_heatmap <- convert_marker_excel_to_list(path, sheet_name = "HEATMAP", allowed_genes)
+    }, error = function(e) {
+      showModal(modalDialog(
+        title = "Error",
+        paste("Failed to read gene marker file:", e$message),
+        easyClose = TRUE
+      ))
+    })
+    
+    tryCatch({
+      biomarkers_dotplot1 <- convert_marker_excel_to_list(path, sheet_name = "DOTPLOT1", allowed_genes)
+    }, error = function(e) {
+      biomarkers_dotplot1 <- NULL
+    })
+    
+    tryCatch({
+      biomarkers_dotplot2 <- convert_marker_excel_to_list(path, sheet_name = "DOTPLOT2", allowed_genes)
+    }, error = function(e) {
+      biomarkers_dotplot2 <- NULL
+    })
+    
+    generate_heatmap_data <- function(sobj, biomarkers = NULL) {
+      if (is.null(biomarkers)) {
+        stop("parameter biomarkers should be specified (now NULL)")
+      }
+      
+      DefaultAssay(sobj) <- "RNA"
+      
+      clusters <- levels(Idents(sobj))
+      all_genes <- unique(unlist(biomarkers))
+      
+      fc_all <- purrr::map_dfr(clusters, function(clust) {
+        fc <- tryCatch({
+          FoldChange(sobj, ident.1 = clust, features = all_genes, assay = "RNA", slot = "data")
+        }, error = function(e) {
+          data.frame(avg_log2FC = rep(NA_real_, length(all_genes)), row.names = all_genes)
+        })
+        
+        fc_df <- as.data.frame(fc)
+        fc_df$gene <- rownames(fc_df)
+        fc_df$cluster <- clust
+        fc_df[, c("cluster", "gene", "avg_log2FC")]
+      })
+      
+      celltypes_ordered <- names(biomarkers)
+      
+      scores <- purrr::map_dfr(seq_along(biomarkers), function(i) {
+        celltype <- celltypes_ordered[i]
+        genes <- biomarkers[[i]]
+        tmp <- fc_all %>%
+          filter(gene %in% genes) %>%
+          group_by(cluster) %>%
+          summarise(score = mean(avg_log2FC, na.rm = TRUE), .groups = "drop") %>%
+          mutate(celltype = celltype)
+        tmp
+      })
+      
+      scores <- scores %>%
+        mutate(
+          celltype = factor(celltype, levels = celltypes_ordered),
+          cluster = factor(cluster, levels = clusters)
+        )
+      
+      scores <- tidyr::expand(scores, cluster, celltype) %>%
+        left_join(scores, by = c("cluster", "celltype")) %>%
+        mutate(score = coalesce(score, 0)) %>%
+        arrange(cluster, celltype)
+      return(scores)
+    }
+    sample_df <- FetchData(sobj, vars = input$sample_select)
+
+    for (sample in sample_vals) {
+      removeModal()
+      showModal(modalDialog(
+        title = "Analysising",
+        paste0("Analysis on sample: ", sample, ". Please wait..."),
+        footer = NULL,
+        easyClose = FALSE
+      ))
+      cells_in_sample <- rownames(sample_df)[as.character(sample_df[[input$sample_select]]) == sample]
+      sobj_subset <- subset(sobj, cells = cells_in_sample)
+      Idents(sobj_subset) <- "seurat_clusters"
+      
+      heatmap_df <- generate_heatmap_data(sobj_subset, biomarkers_heatmap)
+      heatmap <- CreateCellTypesHeatmap(heatmap_df,
+                                        labels_text_size = 4,
+                                        xaxis_text_size = 10,
+                                        yaxis_text_size = 10,
+                                        rotate_x = TRUE)
+      
+      dp1 <- if (!is.null(biomarkers_dotplot1)) custom_dotplot(sobj_subset, biomarkers_dotplot1) else NULL
+      dp2 <- if (!is.null(biomarkers_dotplot2)) custom_dotplot(sobj_subset, biomarkers_dotplot2) else NULL
+      
+      umap <- DimPlot(sobj_subset, reduction = "umap", label = FALSE, group.by = current_ident()) +
+        ggtitle("") + 
+        theme(plot.title = element_text(face = "bold", size = 10),
+                            legend.text = element_text(size = 10)) +
+        guides(color = guide_legend(ncol = 1, override.aes = list(size = 3)))
+      
+      df <- get_cluster_summary_table(sobj_subset)
+      colnames(df) <- c("cluster", "ncell", "pct", "avg.counts", "avg.genes")
+      combined_plot <- create_combined_cluster_plot_patchwork(
+        umap, df, heatmap, dp1, dp2, title = paste0(sample, " from ", input$title_for_download)
+      )
+      height_combined <- if(length(unique(heatmap$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap$data$cluster))}
+
+      pdf_file <- file.path(pdf_dir, paste0(sample, "_Clustering_combined.pdf"))
+      ggsave(pdf_file, plot = combined_plot, width = 18, height = height_combined)
+      pdf_paths[[sample]] <- pdf_file
+    }
+    
+    sample_ident_analysis_path$paths <- pdf_paths
+    removeModal()
+    showNotification(paste("Generated PDFs for", length(sample_vals), "samples (paths stored)."), type = "message")
+    
+  })
+  
+  output$download_ident_sample_analysis <- downloadHandler(
+    filename = function() {
+      paste0("sample_analysis_pdfs_", Sys.Date(), ".zip")
+    },
+    content = function(file) {
+      req(sample_ident_analysis_path$paths)
+      
+      tmp_dir <- tempdir()
+      pdf_files <- c()
+      for (sample in names(sample_ident_analysis_path$paths)) {
+        src <- sample_ident_analysis_path$paths[[sample]]
+        dest <- file.path(tmp_dir, paste0(sample, "_Clustering_combined.pdf"))
+        file.copy(src, dest, overwrite = TRUE)
+        pdf_files <- c(pdf_files, dest)
+      }
+      
+      zip::zipr(zipfile = file, files = pdf_files, recurse = FALSE)
+    },
+    contentType = "application/zip"
+  )
+  
+  observe({
+    req(sample_ident_analysis_path$paths)
+    
+    lapply(names(sample_ident_analysis_path$paths), function(sample) {
+      output_id <- paste0("pdf_preview_", gsub("[^[:alnum:]]", "", sample))
+      
+      if (!(output_id %in% names(output))) {
+        output[[output_id]] <- renderUI({
+          pdf_path <- sample_ident_analysis_path$paths[[sample]]
+          
+          if (file.exists(pdf_path)) {
+            temp_pdf <- tempfile(fileext = ".pdf")
+            file.copy(pdf_path, temp_pdf, overwrite = TRUE)
+            
+            tags$iframe(
+              src = paste0("data:application/pdf;base64,", base64enc::base64encode(temp_pdf)),
+              style = "width: 100%; height: 1000px; border: 1px solid #ddd;"
+            )
+          } else {
+            div(
+              class = "alert alert-warning",
+              icon("exclamation-triangle"),
+              "PDF file not found or inaccessible"
+            )
+          }
+        })
+      }
+    })
+  })
+  
+  observeEvent(input$print_ident_sample_analysis, {
+    
+    req(sample_ident_analysis_path$paths)
+    
+    showModal(
+      modalDialog(
+        title = "Sample Clustering Result",
+        
+        do.call(tabsetPanel, 
+                c(list(id = "pdf_tabs", type = "pills"),
+                  lapply(names(sample_ident_analysis_path$paths), function(sample) {
+                    tabPanel(
+                      title = sample,
+                      value = sample,
+                      div(style = "height: 1000px; margin-top: 20px;",
+                          uiOutput(paste0("pdf_preview_", gsub("[^[:alnum:]]", "", sample))))
+                    )
+                  })
+                )
+        ),
+        
+        easyClose = TRUE,
+        size = "l",
+        footer = modalButton("Close")
+      )
+    )
+  })
   # CONFIRM KEEP ANALYSIS BUTTON
   observeEvent(input$confirm_keep_analysis, {
     req(seuratObj())
@@ -2894,6 +3183,7 @@ Details:", e$message))
       uploaded_filename(NULL)
       temp_seuratObj(NULL)
       combined_plot <- reactiveVal(NULL)
+      sample_ident_analysis_path <- reactiveValues(paths = list())
       shinyjs::runjs("location.reload();")
       removeModal()
     }, error = function(e) {
