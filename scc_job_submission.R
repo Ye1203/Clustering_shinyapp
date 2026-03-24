@@ -4,7 +4,6 @@ submit_scc_job <- function(seuratObj,
                            start_resolution,
                            step_resolution,
                            end_resolution,
-                           min.dist,
                            integration_harmony = FALSE,
                            pca_num,
                            harmony_metadata,
@@ -37,11 +36,9 @@ submit_scc_job <- function(seuratObj,
   # GENERATE SEPARATE HARMONY RSCRIPT TO AVOID MEMORY ISSUES
   harmony_r_script_path <- file.path(save_path, "harmony_job_script.R")
   harmony_code <- paste0('
-dyn.load("/projectnb/wax-es/00_shinyapp/Clustering/conda_env/lib/libicui18n.so.75")
 library(Seurat)
 library(harmony)
 output_file_path <- "', save_path, '"
-min.dist <- "', min.dist, '"
 pca_num <- "', pca_num, '"
 harmony_metadata <- "', harmony_metadata, '"
 integration_harmony <- ', ifelse(integration_harmony, "TRUE", "FALSE"), '
@@ -56,10 +53,10 @@ if(integration_harmony){
                           dims.use = 1:pca, assay.use = "RNA", reduction.save = "harmony", 
                           project.dim = TRUE, verbose = FALSE)
   seurat_obj <- FindNeighbors(seurat_obj, reduction = "harmony", dims = 1:pca, verbose = FALSE)
-  seurat_obj <- RunUMAP(seurat_obj, min.dist = min.dist, dims = 1:pca, reduction = "harmony", verbose = FALSE)
+  seurat_obj <- RunUMAP(seurat_obj, min.dist = 0.3, dims = 1:pca, reduction = "harmony", verbose = FALSE)
 } else {
   seurat_obj <- FindNeighbors(seurat_obj, reduction = "pca", dims = 1:pca, verbose = FALSE)
-  seurat_obj <- RunUMAP(seurat_obj, min.dist = min.dist, dims = 1:pca, reduction = "pca", verbose = FALSE)
+  seurat_obj <- RunUMAP(seurat_obj, min.dist = 0.3, dims = 1:pca, reduction = "pca", verbose = FALSE)
 }
 saveRDS(seurat_obj, file.path(output_file_path, paste0("input_seurat_file_pca_", pca, ".rds")))}
 ')
@@ -67,7 +64,6 @@ saveRDS(seurat_obj, file.path(output_file_path, paste0("input_seurat_file_pca_",
   
   r_script_path <- file.path(save_path, "scc_job_script.R")
     r_code <- paste0('
-dyn.load("/projectnb/wax-es/00_shinyapp/Clustering/conda_env/lib/libicui18n.so.75")
 # Load required libraries
 library(Seurat)
 library(ggplot2)
@@ -305,64 +301,106 @@ tryCatch({
   }
   
   # Custom Dotplot Function
-  custom_dotplot <- function(seurat_obj, gene_list, assay = "RNA", title = NULL, cols = c("lightgrey", "blue")) {
+    custom_dotplot <- function(
+    seurat_obj,
+    gene_list,
+    all_gene_list,
+    assay = "RNA",
+    title = NULL,
+    cols = c("lightgrey", "blue"),
+    col.min = -2.5,
+    col.max = 2.5
+  ) {
     
-    all_genes <- unlist(gene_list, use.names = FALSE)
+    plot_genes <- unlist(gene_list, use.names = FALSE)
+    all_genes <- unique(unlist(all_gene_list, use.names = FALSE))
+    
     DefaultAssay(seurat_obj) <- assay
     clusters <- unique(Idents(seurat_obj))
+    
     results <- data.frame()
     
     for(cluster in clusters) {
+      
       cluster_cells <- WhichCells(seurat_obj, idents = cluster)
-      cluster_data <- GetAssayData(seurat_obj, assay = assay, layer = "data")[all_genes, cluster_cells, drop = FALSE]
+      
+      cluster_data <- GetAssayData(
+        seurat_obj,
+        assay = assay,
+        slot = "data"
+      )[all_genes, cluster_cells, drop = FALSE]
       
       for(gene in all_genes) {
+        
         if(gene %in% rownames(cluster_data)) {
+          
           avg_exp <- mean(expm1(cluster_data[gene, ]))
           pct_exp <- sum(cluster_data[gene, ] > 0) / length(cluster_cells) * 100
-          results <- rbind(results, data.frame(
-            gene = gene,
-            cluster = cluster,
-            avg_exp = avg_exp,
-            pct_exp = pct_exp
-          ))
+          
+          results <- rbind(
+            results,
+            data.frame(
+              gene = gene,
+              cluster = cluster,
+              avg_exp = avg_exp,
+              pct_exp = pct_exp
+            )
+          )
         }
       }
     }
-    
     results <- results %>%
       group_by(gene) %>%
-      mutate(avg_exp_scaled = scale(avg_exp)[,1]) %>%
+      mutate(
+        avg_exp_scaled = scale(log1p(avg_exp))[,1]
+      ) %>%
       ungroup()
     
-    clusters_numeric <- sort(as.numeric(unique(results$cluster)), decreasing = TRUE)
-    results$cluster <- factor(results$cluster, 
-                             levels = as.character(clusters_numeric),
-                             ordered = TRUE)
+    results$avg_exp_scaled <- pmin(
+      pmax(results$avg_exp_scaled, col.min),
+      col.max
+    )
+    
+    results_plot <- results %>%
+      filter(gene %in% plot_genes)
+    
+    clusters_numeric <- sort(as.numeric(unique(results_plot$cluster)), decreasing = TRUE)
+    
+    results_plot$cluster <- factor(
+      results_plot$cluster,
+      levels = as.character(clusters_numeric),
+      ordered = TRUE
+    )
     
     gene_groups <- data.frame()
+    
     for(group_name in names(gene_list)) {
+      
       group_genes <- gene_list[[group_name]]
-      gene_groups <- rbind(gene_groups, 
-                           data.frame(gene = group_genes, group = group_name))
+      
+      gene_groups <- rbind(
+        gene_groups,
+        data.frame(gene = group_genes, group = group_name)
+      )
     }
     
     gene_groups$group <- factor(gene_groups$group, levels = names(gene_list))
     
-    results <- results %>%
+    results_plot <- results_plot %>%
       left_join(gene_groups, by = "gene")
     
-    results$gene <- factor(results$gene, levels = all_genes)
+    results_plot$gene <- factor(results_plot$gene, levels = plot_genes)
     
-    p <- ggplot(results, aes(x = gene, y = cluster)) +
+    p <- ggplot(results_plot, aes(x = gene, y = cluster)) +
       geom_point(aes(size = pct_exp, color = avg_exp_scaled)) +
       scale_color_gradientn(
         colors = cols,
         name = "Avg Exp",
+        limits = c(col.min, col.max),
         guide = guide_colorbar(barwidth = 5, barheight = 0.5)
       ) +
       scale_size(
-        range = c(0, 6),  
+        range = c(0, 6),
         name = "Per Exp",
         limits = c(0, 100),
         breaks = c(0, 25, 50, 75, 100)
@@ -370,25 +408,20 @@ tryCatch({
       facet_grid(. ~ group, scales = "free_x", space = "free_x") +
       theme_cowplot() +
       theme(
-        axis.text.x = element_text(
-          angle = 90, 
-          hjust = 1, 
-          vjust = 0.5,
-          size = 12
-        ),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12),
         axis.text.y = element_text(size = 12),
         axis.title.x = element_blank(),
         axis.title.y = element_blank(),
-        legend.direction = "horizontal", 
+        legend.direction = "horizontal",
         legend.position = "bottom",
-        legend.box = "horizontal", 
+        legend.box = "horizontal",
         legend.justification = "center",
         legend.text = element_text(size = 8),
         legend.title = element_text(size = 9),
-        panel.grid.major = element_blank(),  
-        panel.grid.minor = element_blank(),  
-        panel.spacing.y = unit(0.1, "lines"),  
-        panel.spacing.x = unit(1, "lines"),   
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.y = unit(0.1, "lines"),
+        panel.spacing.x = unit(1, "lines"),
         strip.text = element_text(face = "bold", size = 12),
         strip.background = element_rect(fill = "grey95", color = NA)
       ) +
@@ -550,7 +583,6 @@ results <- future.apply::future_lapply(seq_len(nrow(resolution_index_table)), fu
   resolution <- resolution_index_table$resolution[i]
   pca        <- resolution_index_table$pca[i]
   index      <- resolution_index_table$index[i]
-  dyn.load("/projectnb/wax-es/00_shinyapp/Clustering/conda_env/lib/libicui18n.so.75")
   library(Seurat)
   library(ggplot2)
   library(dplyr)
@@ -599,12 +631,14 @@ results <- future.apply::future_lapply(seq_len(nrow(resolution_index_table)), fu
     dotplot1_plot <- NULL
     dotplot2_plot <- NULL
     
+    biomarkers_dotplot <- c(biomarkers_dotplot1, biomarkers_dotplot2)
+    
     if (!is.null(biomarkers_dotplot1)) {
-      dotplot1_plot <- custom_dotplot(sobj, biomarkers_dotplot1)
+      dotplot1_plot <- custom_dotplot(sobj, biomarkers_dotplot1, biomarkers_dotplot)
     }
     
     if (!is.null(biomarkers_dotplot2)) {
-      dotplot2_plot <- custom_dotplot(sobj, biomarkers_dotplot2)
+      dotplot2_plot <- custom_dotplot(sobj, biomarkers_dotplot2, biomarkers_dotplot)
     }
     
     findcelltypes_result <- NULL
