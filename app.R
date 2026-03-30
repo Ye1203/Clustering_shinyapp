@@ -14,6 +14,7 @@ library(cowplot)
 library(harmony)
 library(tidyr)
 library(qpdf)
+library(loupeR)
 ui <- fluidPage(
   tags$head(
       tags$style(HTML("
@@ -133,6 +134,7 @@ server <- function(input, output, session) {
   user_resolution <- reactiveVal(0.10)
   temp_seuratObj <- reactiveVal(NULL)
   min_dist_default <- reactiveVal(NULL)
+  umap_dist_state <- reactiveVal(NULL)
   combined_plot <- reactiveVal(NULL)
   uploaded_file_info <- reactiveVal(NULL)
   sample_ident_analysis_path <- reactiveValues(paths = list())
@@ -237,6 +239,7 @@ server <- function(input, output, session) {
     harmony_state(NULL)
     harmony_meta_state(NULL)
     user_nn_dims(NULL)
+    umap_dist_state <- reactiveVal(NULL)
     uploaded_filename(NULL)
     status$normalized <- FALSE
     status$scaled <- FALSE
@@ -276,12 +279,17 @@ server <- function(input, output, session) {
   
   # SAVE DATA MODAL
   observeEvent(input$save_data_btn, {
+    if(is.null(input$title_for_download)){
+      save_value <- paste0(tools::file_path_sans_ext(input$data_path), "_", Sys.Date(), ".rds")
+      }else{
+      save_value <- file.path(dirname(input$data_path), paste0(input$title_for_download, "_", Sys.Date(), ".rds"))}
     showModal(modalDialog(
-      size = "m",
+      size = "l",
       title = "Save Data",
       fluidRow(
         column(12,
                checkboxInput("rds_file_chk", "RDS File", value = TRUE),
+               checkboxInput("loupe_file_chk", "Loupe Browser File", value = TRUE),
                checkboxInput("cmd_history_chk", "Command History File", value = TRUE)
         ),
         uiOutput("optional_save_options_ui"),
@@ -289,10 +297,15 @@ server <- function(input, output, session) {
                textInput(
                  "save_path",
                  "Input save path on SCC or local file name (use forward slashes (/). The filename should end with '.rds')",
-                 value = file.path(dirname(input$data_path), paste0(input$title_for_download, "_", Sys.Date(), ".rds")),
+                 value = save_value,
                  width = "100%"
                )
-        )
+        ),
+        column(12,
+               tags$p("The \"Download Locally\" button will not display any pop-up window or notification. When downloading 
+                      files (especially large files such as RDS or Loupe Browser files), please be patient and wait until the 
+                      download is fully completed. Make sure the file has been successfully saved to your local system before 
+                      performing any further actions.", style = "color: rgb(215, 47, 40); font-weight:bold; font-size:14px;"))
       ),
       footer = tagList(
         div(style = "display: flex; width: 100%; gap: 8px;",
@@ -340,77 +353,13 @@ server <- function(input, output, session) {
     })
   })
   
-  observeEvent(input$save_data_btn, {
-    showModal(modalDialog(
-      size = "l",
-      title = "Save Data",
-      fluidRow(
-        tags$p("Select the files you want to save or download:", 
-               style = "font-weight: bold; margin-left: 15px;"),
-        column(12,
-               checkboxInput("rds_file_chk", "RDS File", value = FALSE),
-               checkboxInput("cmd_history_chk", "Command History File", value = FALSE)
-        ),
-        uiOutput("optional_save_options_ui"),
-        column(12,
-               textInput(
-                 "save_path",
-                 "Input save path on SCC or local file name (use forward slashes (/). The filename should end with '.rds')",
-                 value = paste0(file_path_sans_ext(input$data_path), "_", Sys.Date(), ".rds"),
-                 width = "100%"
-               )
-        )
-      ),
-      footer = tagList(
-        div(style = "display: flex; width: 100%; gap: 8px;",
-            actionButton("btn_save", "Save", style = "
-            flex: 1;
-            background-color: #007bff; 
-            color: white;
-            border: none;
-          "),
-            downloadButton("downloadData", "Download Locally", style = "
-            flex: 1;
-            background-color: green;  
-            color: white;
-            border: none;
-          "),
-            actionButton("close_modal", "Close", style = "
-            flex: 1;
-            background-color: #dc3545;  
-            color: white;
-            border: none;
-          ")
-        )
-      )
-    ))
-    
-    output$optional_save_options_ui <- renderUI({
-      opts <- c()
-      if (!is.null(input$integration_harmony) && input$integration_harmony && !is.null(status$neighbor) && status$neighbor) {
-        opts <- c(opts, "Harmony Plot" = "harmony_plot")
-      }
-      if (!is.null(status$clustered) && status$clustered) {
-        opts <- c(opts, "Combined Plot" = "combined_plot", "Gene Marker" = "gene_marker")
-      }
-      if (length(opts) == 0) return(NULL)
-      tags$div(
-        style = "margin-left: 15px;", 
-        checkboxGroupInput(
-          "save_options_optional",
-          "Other files to save:",
-          choices = opts,
-          selected = NULL
-        )
-      )
-    })
-  })
   
   observeEvent(input$btn_save, {
     req(seuratObj(), input$save_path)
     save_path <- input$save_path
     selected_files <- c()
     if (isTRUE(input$rds_file_chk)) selected_files <- c(selected_files, "rds_file")
+    if (isTRUE(input$loupe_file_chk)) {selected_files <- c(selected_files, "loupe_file")}
     if (isTRUE(input$cmd_history_chk)) selected_files <- c(selected_files, "command_history")
     if (!is.null(input$save_options_optional)) selected_files <- c(selected_files, input$save_options_optional)
     
@@ -424,6 +373,16 @@ server <- function(input, output, session) {
       if ("rds_file" %in% selected_files) {
         if (!is.null(temp_seuratObj())) saveRDS(temp_seuratObj(), file = save_path)
         else saveRDS(seuratObj(), file = save_path)
+      }
+      
+      if ("loupe_file" %in% selected_files) {
+        
+        loupe_base <- tools::file_path_sans_ext(save_path)
+        setup()
+        create_loupe_from_seurat(
+          if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj(),
+          output_name = loupe_base
+        )
       }
       
       if ("command_history" %in% selected_files) {
@@ -512,6 +471,7 @@ server <- function(input, output, session) {
       files_to_zip <- c()
       selected_files <- c()
       if (isTRUE(input$rds_file_chk)) selected_files <- c(selected_files, "rds_file")
+      if (isTRUE(input$loupe_file_chk)) {selected_files <- c(selected_files, "loupe_file")}
       if (isTRUE(input$cmd_history_chk)) selected_files <- c(selected_files, "command_history")
       if (!is.null(input$save_options_optional)) selected_files <- c(selected_files, input$save_options_optional)
       
@@ -520,6 +480,27 @@ server <- function(input, output, session) {
         if (!is.null(temp_seuratObj())) saveRDS(temp_seuratObj(), file = rds_path)
         else saveRDS(seuratObj(), file = rds_path)
         files_to_zip <- c(files_to_zip, rds_path)
+      }
+      
+      if ("loupe_file" %in% selected_files) {
+        
+        loupe_output <- file.path(
+          tmp_dir,
+          paste0(tools::file_path_sans_ext(basename(input$data_path)))
+        )
+        setup()
+        create_loupe_from_seurat(
+          if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj(),
+          output_name = loupe_output
+        )
+        
+        loupe_file <- paste0(loupe_output, ".cloupe")
+        
+        if (file.exists(loupe_file)) {
+          files_to_zip <- c(files_to_zip, loupe_file)
+        } else {
+          showNotification("Loupe file not found after creation!", type = "error")
+        }
       }
       
       if ("command_history" %in% selected_files) {
@@ -651,7 +632,7 @@ server <- function(input, output, session) {
     # --- Scaling ---
     if (stop_flag || !"data" %in% layers) {
       ui_list <- append(ui_list, list(
-        tags$p("🔴 SELECT FEATURE AND SCALE THE DATA", style = "color:red; font-weight:bold; font-size:14px; margin:0;")
+        tags$p("🔴 SELECT FEATURE AND DATA SCALED", style = "color:red; font-weight:bold; font-size:14px; margin:0;")
       ))
       stop_flag <- TRUE
     } else {
@@ -659,9 +640,9 @@ server <- function(input, output, session) {
         div(
           style = "display:flex; align-items:center; gap:6px;",
         if (isTRUE(status$scaled)) {
-          tags$p("✅ SELECT FEATURE AND SCALE THE DATA", style = "color:black; font-weight:bold; font-size:14px; margin:0;")
+          tags$p("✅ SELECT FEATURE AND DATA SCALED", style = "color:black; font-weight:bold; font-size:14px; margin:0;")
         } else {
-          tags$p("🔘 SELECT FEATURE AND SCALE THE DATA", style = "color:black; font-weight:bold; font-size:14px; margin:0;")
+          tags$p("🔘 SELECT FEATURE AND DATA SCALED", style = "color:black; font-weight:bold; font-size:14px; margin:0;")
         },
         div(class = "tooltip-circle",
             "?",  
@@ -855,7 +836,7 @@ server <- function(input, output, session) {
       ),
       fluidRow(
           tags$div(
-            style = "margin-left:20px;",
+            style = "margin-left:20px;width = 100%;",
             uiOutput("findvariable_ui")
           )
       ),
@@ -876,7 +857,8 @@ server <- function(input, output, session) {
     
     choices <- c(
       "Use Top 2,000 Most Variable Features (Recommended)" = "variable",
-      "Use All Genes (Long Processing Time!!!)" = "all"
+      "Use All Genes (Long Processing Time!!!)" = "all",
+      "Use Top 2,000 Integration Features (Multi Samples)" = "integration"
     )
     
     if (has_variable) {
@@ -886,12 +868,30 @@ server <- function(input, output, session) {
       )
     }
     
-    radioButtons(
-      "findvariable",
-      NULL,
-      choices = choices,
-      selected = input$findvariable %||% "variable",
-      inline = TRUE
+    tagList(
+      radioButtons(
+        "findvariable",
+        NULL,
+        choices = choices,
+        selected = input$findvariable %||% "variable",
+        inline = FALSE,
+        width = "100%"
+      ),
+      
+      conditionalPanel(
+        condition = "input.findvariable == 'integration'",
+        
+        div(
+          style = "margin-left: 20px; margin-top: 5px;",
+          
+          selectInput(
+            "integration_meta",
+            label = "Select Sample column name",
+            choices = colnames(seuratObj()@meta.data),
+            selected = NULL
+          )
+        )
+      )
     )
   })
   
@@ -903,7 +903,8 @@ server <- function(input, output, session) {
         "Variable Features"
       } else if (input$findvariable == "original") {
         "Original Variable Features"
-      } else {
+      } else if (input$findvariable == "integration") {
+        "Integration Features"}else {
         "All Genes"
       }
     } else {
@@ -1023,7 +1024,7 @@ server <- function(input, output, session) {
             class = "harmony-checkbox",
             checkboxInput(
               inputId = "integration_harmony",
-              label = "Harmony Integration (If you have multi sample the data)",
+              label = "Harmony Integration (If you have multi samples in the data)",
               value = ifelse(!is.null(harmony_state()), harmony_state(), FALSE),
               width = "350px"
             ) %>% 
@@ -1689,7 +1690,15 @@ server <- function(input, output, session) {
         seuratObj(ScaleData(seuratObj(), features = VariableFeatures(seuratObj()), verbose = FALSE))
       } else if(input$findvariable == "all")  {
         seuratObj(ScaleData(seuratObj(), features = rownames(seuratObj()), verbose = FALSE))
-      } else if(input$findvariable == "original"){
+      } else if(input$findvariable == "integration"){
+        obj <- seuratObj()  
+        seurat_list <- SplitObject(obj, split.by = input$integration_meta)
+        seurat_list <- lapply(seurat_list, FindVariableFeatures)
+        features <- SelectIntegrationFeatures(seurat_list)
+        VariableFeatures(obj) <- features 
+        obj <- ScaleData(obj, features = VariableFeatures(obj), verbose = FALSE)
+        seuratObj(obj)
+        }else if(input$findvariable == "original"){
         seuratObj(ScaleData(seuratObj(), features = VariableFeatures(seuratObj()), verbose = FALSE))
       }
       status$normalized <- TRUE
@@ -1697,7 +1706,11 @@ server <- function(input, output, session) {
       status$pca <- FALSE
       status$neighbor <- FALSE
       status$clustered <- FALSE
-      variable_method(if(input$findvariable == "variable") "Variable Features" else "All Genes")
+      variable_method(switch(input$findvariable,
+                             "variable" = "Variable Features",
+                             "all" = "All Genes",
+                             "integration" = "Integration Features",
+                             "original" = "Original Features"))
       removeModal()
       showNotification("Data scaled.", type = "message")
     }, error = function(e) {
@@ -1715,10 +1728,10 @@ server <- function(input, output, session) {
                             p("The waiting time is related to the size of the dataset, Gene Selection Method and the number of PCs.")
                           ), footer = NULL, easyClose = FALSE))
     tryCatch({
-      if (input$findvariable == "variable") {
-        seuratObj(suppressWarnings(RunPCA(seuratObj(), features = VariableFeatures(seuratObj()), npcs = input$npc, verbose = FALSE)))
-      } else {
+      if (input$findvariable == "all") {
         seuratObj(suppressWarnings(RunPCA(seuratObj(), features = rownames(seuratObj()), npcs = input$npc, verbose = FALSE)))
+      } else {
+        seuratObj(suppressWarnings(RunPCA(seuratObj(), features = VariableFeatures(seuratObj()), npcs = input$npc, verbose = FALSE)))
       }
       status$normalized <- TRUE
       status$scaled <- TRUE
@@ -1864,7 +1877,7 @@ server <- function(input, output, session) {
     } else {
       metadata_cols[1]
     }
-    selected_col <- harmony_meta_state() %||% default_col
+    selected_col <- isolate(harmony_meta_state() %||% default_col)
     tagList(
       div(
         style = "display: inline-block; vertical-align: middle; margin-left:20px;",
@@ -2264,13 +2277,19 @@ Details:", e$message))
     
     return(p)
   }
-  get_cluster_summary_table <- function(seurat_obj) {
-    meta <- data.frame(
+  get_cluster_summary_table <- function(seurat_obj, meta_col = NA) {
+
+    if(is.na(meta_col)){    
+      meta <- data.frame(
       cluster = as.character(Idents(seurat_obj)),
       counts = seurat_obj$nCount_RNA,
-      genes = seurat_obj$nFeature_RNA
-    )
-    
+      genes = seurat_obj$nFeature_RNA)
+      }else{
+      meta <- data.frame(
+      cluster = as.character(seurat_obj@meta.data[[meta_col]]),
+      counts = seurat_obj$nCount_RNA,
+      genes = seurat_obj$nFeature_RNA)
+    }
     all_cells <- meta %>%
       group_by(cluster) %>%
       summarise(
@@ -2366,7 +2385,6 @@ Details:", e$message))
       new_levels <- labs[order(cluster_num)]
       Idents(sobj) <- factor(Idents(sobj), levels = new_levels)
       sobj$shiny_clusters <- Idents(sobj)
-      Idents(sobj) <- sobj$shiny_clusters
       base_name <- if (!is.null(subset_data_path())) {
         paste0("Subset: ", file_path_sans_ext(basename(subset_data_path())))
       } else {
@@ -2388,8 +2406,7 @@ Details:", e$message))
                         legend.text = element_text(size = 10))+
                   guides(color = guide_legend(ncol = 1, 
                                               override.aes = list(size = 3))))
-      
-      df <- get_cluster_summary_table(sobj)
+      df <- get_cluster_summary_table(sobj, "seurat_clusters")
       
       colnames(df) <- c("cluster", "ncell", "pct", "avg.counts", "avg.genes")
       table_data(df)
@@ -2452,11 +2469,17 @@ Details:", e$message))
     )
   )
   
+  debounced_dist <- reactive(input$umap_dist) %>% debounce(3000)
+  
+  observeEvent(debounced_dist(), {
+    umap_dist_state(input$umap_dist)
+  })
+  
   #   UMAP DISTANCE INPUT UI
   output$umap_dist_ui <- renderUI({
     numericInput("umap_dist", NULL, 
-                 value = input$umap_dist %||% min_dist_default(), 
-                 min = 0.001, max = 0.5, step = 0.001, width = "100%")
+                 value = umap_dist_state() %||% min_dist_default(), 
+                 min = 0.001, max = 1, step = 0.001, width = "100%")
   })
   
   # DOWNLOAD EXCEL TEMPLATE
@@ -3209,14 +3232,18 @@ Details:", e$message))
       easyClose = FALSE
     ))
     #MARKER
-    get_selected_values <- function(obj, col, prefix) {
+    get_selected_values <- function(obj, col, checkbox_prefix = "sample_cb", rename_prefix = "sample_rename") {
       vals <- as.character(unique(obj@meta.data[[col]]))
-      selected <- sapply(vals, function(val) {
-        if(isTRUE(input[[paste0(prefix, "_", val)]])) val else NA
-      })
-      na.omit(selected)
+      mapping <- sapply(vals, function(val) {
+        checked <- isTRUE(input[[paste0(checkbox_prefix, "_", val)]])
+        if (!checked) return(NULL)
+        new_name <- input[[paste0(rename_prefix, "_", val)]]
+        if (is.null(new_name) || new_name == "") val else new_name
+      }, simplify = FALSE)
+      unlist(mapping)
     }
-    sample_vals <- get_selected_values(sobj, input$sample_select, "sample_cb")
+    
+    sample_vals <- get_selected_values(seuratObj(), input$sample_select)
     if (length(sample_vals) == 0) {
       removeModal()
       showModal(modalDialog(
@@ -3800,6 +3827,7 @@ Details:", e$message))
       current_ident(NULL)
       plot_title(NULL)
       harmony_state(NULL)
+      umap_dist_state <- reactiveVal(NULL)
       harmony_meta_state(NULL)
       user_nn_dims(NULL)
       uploaded_filename(NULL)
