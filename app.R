@@ -870,7 +870,7 @@ server <- function(input, output, session) {
   })
   
   output$findvariable_ui <- renderUI({
-    
+    req(seuratObj())
     has_variable <- !is.null(seuratObj()) && length(VariableFeatures(seuratObj())) > 0
     
     choices <- c(
@@ -1753,7 +1753,8 @@ server <- function(input, output, session) {
           column(6,
                  div(
                    style = "color: red; margin-top: 30px;",
-                   "Copy and paste your custom feature list into the left box.\nEach gene should be separated by a new line."
+                   "Copy and paste your custom feature list into the left box.\nEach gene should be separated by a new line.\n
+                   It is recommended to input as many genes as possible—at least 300."
                  )
           )
         ),
@@ -1778,11 +1779,23 @@ server <- function(input, output, session) {
       if (input$findvariable == "variable") {
         
         obj <- FindVariableFeatures(obj, selection.method = "vst", nfeatures = 2000, verbose = FALSE)
-        result_df <- data.frame(
-          feature = rownames(obj[["RNA"]]@meta.features),
-          obj[["RNA"]]@meta.features,
-          row.names = NULL
-        )
+        assay_obj <- obj[["RNA"]]
+        
+        features <- rownames(assay_obj)
+        if ("meta.features" %in% slotNames(assay_obj)) {
+          
+          result_df <- data.frame(
+            feature = rownames(obj[["RNA"]]@meta.features), 
+            obj[["RNA"]]@meta.features,
+            row.names = NULL
+          )
+        } else {
+          result_df <- data.frame(
+            feature = features,
+            obj@assays[["RNA"]]@meta.data,
+            row.names = NULL
+          )
+        }
         
       } else if (input$findvariable == "integration") {
         seurat_list <- SplitObject(obj, split.by = input$integration_meta)
@@ -1842,7 +1855,7 @@ server <- function(input, output, session) {
         ),
         
         footer = tagList(
-          downloadButton("download_feature_info", "Download Feature Information"),
+          downloadButton("download_feature_info", "Download Feature Information", class = "btn btn-success"),
           actionButton("continue_scale", "Continue Scale Data", class = "btn-primary"),
           modalButton("Close")
         ),
@@ -1925,15 +1938,11 @@ server <- function(input, output, session) {
       VariableFeatures(obj) <- genes 
     }
     if(input$findvariable == "custom" |input$findvariable == "integration"){
-      vst_cols <- c(
-        "vst.mean",
-        "vst.variance",
-        "vst.variance.expected",
-        "vst.variance.standardized"
-      )
-      obj[["RNA"]]@meta.features <- data.frame(
-        row.names = rownames(obj)
-      )
+      assay_obj <- obj[["RNA"]]
+      if ("meta.features" %in% slotNames(assay_obj)) {
+        assay_obj@meta.features <- data.frame(row.names = rownames(assay_obj))
+        obj[["RNA"]] <- assay_obj
+      }
     }
     obj  <- ScaleData(obj, features = VariableFeatures(obj), verbose = FALSE)
     seuratObj(obj)
@@ -3618,7 +3627,7 @@ Details:", e$message))
         dotplot2 = dp2
       )
       
-      excel_file <- file.path(pdf_dir, paste0(sample, "_cluster_data.xlsx"))
+      excel_file <- file.path(pdf_dir, "Data", paste0(sample, ".xlsx"))
       
       get_combined_data(
         df_table = df,
@@ -3628,11 +3637,37 @@ Details:", e$message))
         file_path = excel_file)
       
       height_combined <- if(length(unique(heatmap$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap$data$cluster))}
+      height_heatmap <- length(unique(heatmap_plot()$data$cluster))*0.8
+      combined_file <- file.path(pdf_dir, "Combined", paste0(sample, ".pdf"))
+      umap_file <- file.path(pdf_dir, "Umap", paste0(sample, ".pdf"))
+      heatmap_file <- file.path(pdf_dir, "Heatmap", paste0(sample, ".pdf"))
+      dp1_file <- file.path(pdf_dir, "Dotplot", paste0(sample, "_1.pdf"))
+      dp2_file <-file.path(pdf_dir, "Dotplot", paste0(sample, "_2.pdf"))
       
-      pdf_file <- file.path(pdf_dir, paste0(sample, "_Clustering_combined.pdf"))
-      ggsave(pdf_file, plot = combined_plot, width = 18, height = height_combined)
+      dirs <- c("Combined", "Umap", "Heatmap", "Dotplot", "Data")
+      for (d in dirs) {
+        dir.create(file.path(pdf_dir, d), recursive = TRUE, showWarnings = FALSE)
+      }
+      
+      
+      ggsave(combined_file, plot = combined_plot, width = 18, height = height_combined)
+      ggsave(umap_file, plot = umap, width = 7, height = 8)
+      ggsave(heatmap_file, plot = heatmap, width = 7, height = height_heatmap)
+
+      if (!is.null(dp1)) {
+        ggsave(dp1_file, plot = dp1, width = 18, height = 6)
+      }
+      
+      if (!is.null(dp2)) {
+        ggsave(dp2_file, plot = dp2, width = 18, height = 6)
+      }
+      
       pdf_paths[[sample]] <- list(
-        pdf   = pdf_file,
+        combined   = combined_file,
+        umap = umap_file,
+        heatmap = heatmap_file,
+        dp1 = dp1_file,
+        dp2 = dp2_file,
         excel = excel_file
       )
     }
@@ -3895,11 +3930,10 @@ Details:", e$message))
       # -------------------------
       openxlsx::saveWorkbook(wb, combined_excel_file, overwrite = TRUE)
       pdf_paths[["All"]] <- list(
-        pdf = combined_pdf_file,
+        combined = combined_pdf_file,
         excel = combined_excel_file
       )
     }
-    
     show_download_print(TRUE)
     sample_ident_analysis_path$paths <- pdf_paths
     removeModal()
@@ -3916,7 +3950,7 @@ Details:", e$message))
       req(sample_ident_analysis_path$paths[["All"]]) 
       
       tmp_dir <- tempdir()
-      combined_pdf <- sample_ident_analysis_path$paths[["All"]]$pdf
+      combined_pdf <- sample_ident_analysis_path$paths[["All"]]$combined
       combined_excel <- sample_ident_analysis_path$paths[["All"]]$excel
       
       pdf_dest <- file.path(tmp_dir, basename(combined_pdf))
@@ -3932,39 +3966,54 @@ Details:", e$message))
   
   output$download_ident_sample_analysis_separate <- downloadHandler(
     filename = function() {
-      paste0("separate_sample_analysis_", Sys.Date(), ".zip")
+      paste0("sample_analysis_pdfs_", Sys.Date(), ".zip")
     },
     content = function(file) {
       req(sample_ident_analysis_path$paths)
+      file_paths <- sample_ident_analysis_path$paths
+      temp_dir <- tempdir()
+      temp_zip_dir <- file.path(temp_dir, "sample_analysis_pdfs_zips")
+      if (dir.exists(temp_zip_dir)) {
+        unlink(temp_zip_dir, recursive = TRUE)
+      }
+      dir.create(temp_zip_dir, recursive = TRUE)
       
-      tmp_dir <- tempdir()
-      all_files <- c()
+      subdirs <- c("Combined", "Umap", "Heatmap", "Dotplot", "Data")
+      for (subdir in subdirs) {
+        dir.create(file.path(temp_zip_dir, subdir), showWarnings = FALSE, recursive = TRUE)
+      }
       
-      for (sample in names(sample_ident_analysis_path$paths)) {
-        if (sample == "All") next  
-        pdf_src   <- sample_ident_analysis_path$paths[[sample]]$pdf
-        excel_src <- sample_ident_analysis_path$paths[[sample]]$excel
+      samples <- names(file_paths)[names(file_paths) != "All"]
+      
+      for (sample in samples) {
+        sample_files <- file_paths[[sample]]
         
-        if (file.exists(pdf_src) && file.exists(excel_src)) {
-          pdf_dest <- file.path(tmp_dir, basename(pdf_src))
-          excel_dest <- file.path(tmp_dir, basename(excel_src))
+        for (file_type in names(sample_files)) {
+          file_path <- sample_files[[file_type]]
           
-          file.copy(pdf_src, pdf_dest, overwrite = TRUE)
-          file.copy(excel_src, excel_dest, overwrite = TRUE)
-          
-          all_files <- c(all_files, pdf_dest, excel_dest)
+          if (!is.null(file_path) && file.exists(file_path)) {
+            target_subdir <- switch(file_type,
+                                    "combined" = "Combined",
+                                    "umap" = "Umap", 
+                                    "heatmap" = "Heatmap",
+                                    "dp1" = "Dotplot",
+                                    "dp2" = "Dotplot",
+                                    "excel" = "Data"
+            )
+            
+              dest_path <- file.path(temp_zip_dir, target_subdir, basename(file_path))
+              file.copy(file_path, dest_path, overwrite = TRUE)
+          }
         }
       }
       
-      if (length(all_files) == 0) {
-        showNotification("No separate sample files found to download.", type = "warning")
-        return(NULL)
-      }
-      
-      zip::zipr(zipfile = file, files = all_files, recurse = FALSE)
+      old_wd <- setwd(temp_zip_dir)
+      zip(zipfile = file, files = ".", flags = "-rq")
+      setwd(old_wd)
     },
     contentType = "application/zip"
   )
+  
   observe({
     req(sample_ident_analysis_path$paths)
     
@@ -3980,7 +4029,7 @@ Details:", e$message))
         current_output_id <- paste0("pdf_preview_", URLencode(current_sample, reserved = TRUE))
         
         output[[current_output_id]] <- renderUI({
-          pdf_path <- sample_ident_analysis_path$paths[[current_sample]]$pdf
+          pdf_path <- sample_ident_analysis_path$paths[[current_sample]]$combined
           
           if (!is.null(pdf_path) && file.exists(pdf_path)) {
 
