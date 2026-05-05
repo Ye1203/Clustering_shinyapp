@@ -15,6 +15,7 @@ library(harmony)
 library(tidyr)
 library(qpdf)
 library(loupeR)
+library(DT)
 ui <- fluidPage(
   tags$head(
       tags$style(HTML("
@@ -139,6 +140,8 @@ server <- function(input, output, session) {
   uploaded_file_info <- reactiveVal(NULL)
   sample_ident_analysis_path <- reactiveValues(paths = list())
   show_download_print <- reactiveVal(FALSE)
+  rv <- reactiveValues(rows = list())
+  integration_meta_state <- reactiveVal(NULL)
   # CONTROL STEP STATUS
   status <- reactiveValues(
     normalized = FALSE,
@@ -239,7 +242,7 @@ server <- function(input, output, session) {
     harmony_state(NULL)
     harmony_meta_state(NULL)
     user_nn_dims(NULL)
-    umap_dist_state <- reactiveVal(NULL)
+    umap_dist_state(NULL)
     uploaded_filename(NULL)
     status$normalized <- FALSE
     status$scaled <- FALSE
@@ -249,6 +252,7 @@ server <- function(input, output, session) {
     temp_seuratObj(NULL)
     combined_plot(NULL)
     show_download_print(FALSE)
+    integration_meta_state(NULL)
     showNotification("Reset completed. You can now load a new dataset.", type = "message")
   })
   
@@ -379,15 +383,22 @@ server <- function(input, output, session) {
         
         loupe_base <- tools::file_path_sans_ext(save_path)
         setup()
+        seurat_file <-  if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj()
+        cols_to_remove <- c("CB", "CB_original")
+        seurat_file@meta.data <- seurat_file@meta.data[, 
+                                                       !(colnames(seurat_file@meta.data) %in% cols_to_remove), 
+                                                       drop = FALSE]
         create_loupe_from_seurat(
-          if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj(),
+          seurat_file,
           output_name = loupe_base
         )
       }
       
       if ("command_history" %in% selected_files) {
         cmd_lines <- c(
+          paste0("orginal file: ", input$data_path),
           paste0("findvariable: ", input$findvariable %||% "variable"),
+          if(input$findvariable != "all"){paste0("valuable features: ", paste(VariableFeatures(seuratObj()), collapse = ", "))},
           paste0("npc: ", input$npc),
           paste0("nn_dims: ", input$nn_dims),
           paste0("integration_harmony: ", input$integration_harmony %||% FALSE),
@@ -411,7 +422,7 @@ server <- function(input, output, session) {
             cmd_lines <- c(cmd_lines, paste0("cluster_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
           }
         }
-        cmd_file <- paste0(tools::file_path_sans_ext(save_path), "_CommandHistory_", Sys.Date(), ".txt")
+        cmd_file <- paste0(tools::file_path_sans_ext(save_path), "_CommandHistory", ".txt")
         writeLines(cmd_lines, cmd_file)
       }
       if ("harmony_plot" %in% selected_files) {
@@ -421,7 +432,7 @@ server <- function(input, output, session) {
           group.by = input$harmony_metadata,
           split.by = input$harmony_metadata
         ) + ggtitle(NULL)
-        harmony_file <- paste0(file_path_sans_ext(save_path),paste0("HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".png"))
+        harmony_file <- paste0(file_path_sans_ext(save_path),paste0("_HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$data_path)), ".png"))
         ggsave(harmony_file, plot = harmony_plot, width = 20, height = 8, dpi = 300)
       }
       
@@ -434,7 +445,7 @@ server <- function(input, output, session) {
           dotplot1_plot(),
           dotplot2_plot()
         )
-        comb_file <- paste0(file_path_sans_ext(save_path),paste0(input$title_for_download, ".pdf"))
+        comb_file <- paste0(file_path_sans_ext(save_path), "_Combined_plot.pdf")
         height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
         ggsave(comb_file, plot = comb_plot, width = 18, height = height_combined)
       }
@@ -463,7 +474,7 @@ server <- function(input, output, session) {
   
   output$downloadData <- downloadHandler(
     filename = function() {
-      paste0("Clustering_",file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".zip")
+      paste0("Clustering_",file_path_sans_ext(basename(input$save_path)), "_", Sys.Date(), ".zip")
     },
     content = function(file) {
       req(seuratObj())
@@ -483,14 +494,19 @@ server <- function(input, output, session) {
       }
       
       if ("loupe_file" %in% selected_files) {
-        
+        seurat_file <-  if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj()
+        cols_to_remove <- c("CB", "CB_original")
+        seurat_file@meta.data <- seurat_file@meta.data[, 
+                                                       !(colnames(seurat_file@meta.data) %in% cols_to_remove), 
+                                                       drop = FALSE]
+
         loupe_output <- file.path(
           tmp_dir,
-          paste0(tools::file_path_sans_ext(basename(input$data_path)))
+          paste0(tools::file_path_sans_ext(basename(input$save_path)))
         )
         setup()
         create_loupe_from_seurat(
-          if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj(),
+          seurat_file,
           output_name = loupe_output
         )
         
@@ -505,7 +521,9 @@ server <- function(input, output, session) {
       
       if ("command_history" %in% selected_files) {
         cmd_lines <- c(
+          paste0("orginal file: ", input$data_path),
           paste0("findvariable: ", input$findvariable %||% "variable"),
+          if(input$findvariable != "all"){paste0("valuable features: ", paste(VariableFeatures(seuratObj()), collapse = ", "))},
           paste0("npc: ", input$npc),
           paste0("nn_dims: ", input$nn_dims),
           paste0("integration_harmony: ", input$integration_harmony %||% FALSE),
@@ -529,7 +547,7 @@ server <- function(input, output, session) {
             cmd_lines <- c(cmd_lines, paste0("cluster_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
           }
         }
-        cmd_file <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$save_path)), "_CommandHistory_", Sys.Date(), ".txt"))
+        cmd_file <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$save_path)), "_CommandHistory_", ".txt"))
         writeLines(cmd_lines, cmd_file)
         files_to_zip <- c(files_to_zip, cmd_file)
       }
@@ -541,7 +559,7 @@ server <- function(input, output, session) {
           group.by = input$harmony_metadata,
           split.by = input$harmony_metadata
         ) + ggtitle(NULL)
-        harmony_file <- file.path(tmp_dir, paste0("HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$data_path)), "_", Sys.Date(), ".png"))
+        harmony_file <- file.path(tmp_dir, paste0("_HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$save_path)), ".png"))
         ggsave(harmony_file, plot = harmony_plot, width = 20, height = 8, dpi = 300)
         files_to_zip <- c(files_to_zip, harmony_file)
       }
@@ -554,7 +572,7 @@ server <- function(input, output, session) {
           dotplot1_plot(),
           dotplot2_plot()
         )
-        comb_file <- file.path(tmp_dir, paste0(input$title_for_download, ".pdf"))
+        comb_file <- paste0(file_path_sans_ext(input$save_path), "_Combined_plot.pdf")
         height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
         ggsave(comb_file, plot = comb_plot, width = 18, height = height_combined)
         files_to_zip <- c(files_to_zip, comb_file)
@@ -568,7 +586,7 @@ server <- function(input, output, session) {
         if (!file.exists(gene_file)) {
           showNotification("Gene Marker file not found for download!", type = "error")
         } else {
-          gene_dest <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$data_path)), "_Gene_Marker.xlsx"))
+          gene_dest <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$save_path)), "_Gene_Marker.xlsx"))
           file.copy(gene_file, gene_dest, overwrite = TRUE)
           files_to_zip <- c(files_to_zip, gene_dest)
         }
@@ -856,17 +874,22 @@ server <- function(input, output, session) {
     has_variable <- !is.null(seuratObj()) && length(VariableFeatures(seuratObj())) > 0
     
     choices <- c(
-      "Use Top 2,000 Most Variable Features (Recommended)" = "variable",
-      "Use All Genes (Long Processing Time!!!)" = "all",
-      "Use Top 2,000 Integration Features (Multi Samples)" = "integration"
+      "Use Top 2,000 Most Variable Features (Recommended)" = "variable"
     )
     
     if (has_variable) {
       choices <- c(
         choices,
-        "Use Original Set of Variable Features (Useful when Subsetting, to maintain Harmony across samples)" = "original"
+        "Use Original Set of Variable Features (Useful when subsetting, to maintain Harmony across samples)" = "original"
       )
     }
+    
+    choices <- c(
+      choices,
+      "Custom Feature List (Allow user paste their own feature list)" = "custom",
+      "Use Top 2,000 Integration Features (Multi samples)" = "integration")
+    
+    selected_col <- isolate(integration_meta_state() %||% NULL)
     
     tagList(
       radioButtons(
@@ -883,15 +906,44 @@ server <- function(input, output, session) {
         
         div(
           style = "margin-left: 20px; margin-top: 5px;",
-          
           selectInput(
             "integration_meta",
             label = "Select Sample column name",
             choices = colnames(seuratObj()@meta.data),
-            selected = NULL
+            selected = selected_col
+          ),
+          
+          tags$div(
+            style = "margin-top: 5px; margin-bottom: 5px;",
+            textOutput("integration_metadata_preview")
           )
         )
       )
+    )
+  })
+  
+  observeEvent(input$integration_meta, {
+    integration_meta_state(input$integration_meta)
+  })
+  
+  output$integration_metadata_preview <- renderText({
+    req(input$integration_meta, seuratObj())
+    
+    vals <- seuratObj()@meta.data[[input$integration_meta]]
+    vals <- vals[!is.na(vals)]
+    
+    unique_vals <- unique(vals)
+    preview_vals <- unique_vals[1:min(10, length(unique_vals))]
+    
+    result <- paste(preview_vals, collapse = ", ")
+    
+    if (length(unique_vals) > 10) {
+      result <- paste0(result, ", ...")
+    }
+    
+    paste0(
+      "Preview values (", length(unique_vals), " unique): ",
+      result
     )
   })
   
@@ -905,7 +957,7 @@ server <- function(input, output, session) {
         "Original Variable Features"
       } else if (input$findvariable == "integration") {
         "Integration Features"}else {
-        "All Genes"
+        "Custom Gene List"
       }
     } else {
       "Variable Features"
@@ -1190,7 +1242,9 @@ server <- function(input, output, session) {
                               define the cluster name in umap. Please ensure that all markers in the \"HEATMAP\"
                               table exist in the data, and that no duplicate markers appear in different columns
                               within the two \"DOTPLOT\". The first row of each column lists the marker's class,
-                              followed by the marker's name. Note the capitalization.")
+                              followed by the marker's name. Note the capitalization. The \"Heatmap\" function calculates the \"Fold Change\":
+                              For each gene, it compares the current cluster of unknown cell types (rows) against the combined aggregate of all
+                              remaining cell types; Subsequently, it calculates the mean value for each gene within each cell type (known types, columns).")
                      )
                  )
                ),
@@ -1679,44 +1733,222 @@ server <- function(input, output, session) {
   # SCALING STEP SERVER
   observeEvent(input$scaling_btn_ui,{
     req(seuratObj())
+    if (input$findvariable == "custom") {
+      
+      showModal(modalDialog(
+        title = "Custom Feature List",
+        
+        fluidRow(
+          column(6,
+                 textAreaInput(
+                   inputId = "feature_text",
+                   label = "Gene List:",
+                   value = rv$visualization_marker,
+                   rows = 20,
+                   placeholder = "Paste genes here:\nGene_A\nGene_B\nGene_C",
+                   width = "100%"
+                 )
+          ),
+          
+          column(6,
+                 div(
+                   style = "color: red; margin-top: 30px;",
+                   "Copy and paste your custom feature list into the left box.\nEach gene should be separated by a new line."
+                 )
+          )
+        ),
+        
+        footer = tagList(
+          actionButton("continue_scale", "Continue Scale Data", class = "btn-primary"),
+          modalButton("Close")
+        ),
+        
+        size = "l",
+        easyClose = FALSE
+      ))
+    }else{
+    showModal(modalDialog(title = "Please wait", 
+                          tagList(
+                            p("Calculating feature..."),
+                            p("The waiting time is related to the size of the dataset and usually takes one minute.")
+                          ), footer = NULL, easyClose = FALSE))
+    tryCatch({
+      obj <- seuratObj()
+
+      if (input$findvariable == "variable") {
+        
+        obj <- FindVariableFeatures(obj, selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+        result_df <- data.frame(
+          feature = rownames(obj[["RNA"]]@meta.features),
+          obj[["RNA"]]@meta.features,
+          row.names = NULL
+        )
+        
+      } else if (input$findvariable == "integration") {
+        seurat_list <- SplitObject(obj, split.by = input$integration_meta)
+        seurat_list <- lapply(seurat_list, function(x) {
+          FindVariableFeatures(
+            x,
+            selection.method = "vst",
+            nfeatures = 2000,
+            verbose = FALSE
+          )
+        })
+        
+        features <- SelectIntegrationFeatures(seurat_list)
+        VariableFeatures(obj) <- features
+        gene_lists <- lapply(seurat_list, VariableFeatures)
+        
+        all_genes <- rownames(obj)
+        
+        mat <- matrix(
+          FALSE,
+          nrow = length(all_genes),
+          ncol = length(gene_lists),
+          dimnames = list(all_genes, names(gene_lists))
+        )
+        
+        for (i in seq_along(gene_lists)) {
+          mat[gene_lists[[i]], i] <- TRUE
+        }
+        
+        result_df <- as.data.frame(mat)
+        result_df$feature <- rownames(result_df)
+        result_df$count <- rowSums(result_df[, names(gene_lists)])
+        result_df$vst.variable <- result_df$feature %in% features
+        
+        result_df <- result_df[, c("feature", "count", "vst.variable", names(gene_lists))]
+        result_df <- result_df[order(-result_df$count), ]
+        
+      } else if (input$findvariable == "original") {
+        all_genes <- rownames(obj)
+        vf <- VariableFeatures(obj)
+        
+        result_df <- data.frame(
+          feature = all_genes,
+          vst.variable = all_genes %in% vf
+        )
+      }
+      
+      rv$feature_df <- result_df 
+      seuratObj(obj)
+      
+      showModal(modalDialog(
+        title = "Feature Information",
+        
+        div(
+          style = "max-height: 500px; overflow-y: auto;",
+          DT::DTOutput("feature_table_preview")
+        ),
+        
+        footer = tagList(
+          downloadButton("download_feature_info", "Download Feature Information"),
+          actionButton("continue_scale", "Continue Scale Data", class = "btn-primary"),
+          modalButton("Close")
+        ),
+        
+        size = "l",
+        easyClose = FALSE
+      ))
+      
+    }, error = function(e) {
+      removeModal()
+      showModal(modalDialog(title = "Error", e$message, easyClose = TRUE))
+    })}
+
+  })
+  
+  output$feature_table_preview <- DT::renderDT({
+    req(rv$feature_df)
+    if (input$findvariable != "integration") {
+      
+      df <- rv$feature_df
+      round_cols <- c(
+        "vst.mean",
+        "vst.variance",
+        "vst.variance.expected",
+        "vst.variance.standardized"
+      )
+      round_cols <- intersect(round_cols, colnames(df))
+      DT::datatable(
+        df,
+        rownames = FALSE,
+        options = list(
+          pageLength = 10,
+          scrollX = TRUE
+        )
+      ) %>%
+        DT::formatRound(round_cols, 2)
+    }else{
+      DT::datatable(
+        rv$feature_df,
+        rownames = FALSE,
+        options = list(
+          pageLength = 10,
+          scrollX = TRUE
+        )
+      ) 
+      }
+  }, server = TRUE)
+  
+  output$download_feature_info <- downloadHandler(
+    filename = function() {
+      paste0("feature_info_", Sys.Date(), ".xlsx")
+    },
+    content = function(file) {
+      
+      wb <- openxlsx::createWorkbook()
+      openxlsx::addWorksheet(wb, "features")
+      
+      openxlsx::writeData(
+        wb,
+        sheet = "features",
+        x = rv$feature_df
+      )
+      
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+    }
+  )
+  
+  observeEvent(input$continue_scale, {
     showModal(modalDialog(title = "Please wait", 
                           tagList(
                             p("Scaling..."),
                             p("The waiting time is related to the size of the dataset and usually takes one minute.")
                           ), footer = NULL, easyClose = FALSE))
-    tryCatch({
-      if (input$findvariable == "variable") {
-        seuratObj(FindVariableFeatures(seuratObj(), selection.method = "vst", nfeatures = 2000, verbose = FALSE))
-        seuratObj(ScaleData(seuratObj(), features = VariableFeatures(seuratObj()), verbose = FALSE))
-      } else if(input$findvariable == "all")  {
-        seuratObj(ScaleData(seuratObj(), features = rownames(seuratObj()), verbose = FALSE))
-      } else if(input$findvariable == "integration"){
-        obj <- seuratObj()  
-        seurat_list <- SplitObject(obj, split.by = input$integration_meta)
-        seurat_list <- lapply(seurat_list, FindVariableFeatures)
-        features <- SelectIntegrationFeatures(seurat_list)
-        VariableFeatures(obj) <- features 
-        obj <- ScaleData(obj, features = VariableFeatures(obj), verbose = FALSE)
-        seuratObj(obj)
-        }else if(input$findvariable == "original"){
-        seuratObj(ScaleData(seuratObj(), features = VariableFeatures(seuratObj()), verbose = FALSE))
-      }
-      status$normalized <- TRUE
-      status$scaled <- TRUE
-      status$pca <- FALSE
-      status$neighbor <- FALSE
-      status$clustered <- FALSE
-      variable_method(switch(input$findvariable,
-                             "variable" = "Variable Features",
-                             "all" = "All Genes",
-                             "integration" = "Integration Features",
-                             "original" = "Original Features"))
-      removeModal()
-      showNotification("Data scaled.", type = "message")
-    }, error = function(e) {
-      removeModal()
-      showModal(modalDialog(title = "Error", e$message, easyClose = TRUE))
-    })
+    obj <- seuratObj()
+    if(input$findvariable == "custom"){
+      genes <- unlist(strsplit(input$feature_text, "\n"))
+      genes <- trimws(genes)
+      genes <- genes[genes != ""]
+      genes <- genes[genes %in% rownames(obj)]
+      VariableFeatures(obj) <- genes 
+    }
+    if(input$findvariable == "custom" |input$findvariable == "integration"){
+      vst_cols <- c(
+        "vst.mean",
+        "vst.variance",
+        "vst.variance.expected",
+        "vst.variance.standardized"
+      )
+      obj[["RNA"]]@meta.features <- data.frame(
+        row.names = rownames(obj)
+      )
+    }
+    obj  <- ScaleData(obj, features = VariableFeatures(obj), verbose = FALSE)
+    seuratObj(obj)
+    status$normalized <- TRUE
+    status$scaled <- TRUE
+    status$pca <- FALSE
+    status$neighbor <- FALSE
+    status$clustered <- FALSE
+    variable_method(switch(input$findvariable,
+                           "variable" = "Variable Features",
+                           "custom" = "Custom Gene Lists",
+                           "integration" = "Integration Features",
+                           "original" = "Original Features"))
+    removeModal()
+    showNotification("Data scaled.", type = "message")
   })
   
   # PCA STEP SERVER
@@ -2238,7 +2470,6 @@ Details:", e$message))
       left_join(gene_groups, by = "gene")
     
     results_plot$gene <- factor(results_plot$gene, levels = plot_genes)
-    
     p <- ggplot(results_plot, aes(x = gene, y = cluster)) +
       geom_point(aes(size = pct_exp, color = avg_exp_scaled)) +
       scale_color_gradientn(
@@ -2249,7 +2480,7 @@ Details:", e$message))
       ) +
       scale_size(
         range = c(0, 6),
-        name = "Per Exp",
+        name = "Per Exp Scaled",
         limits = c(0, 100),
         breaks = c(0, 25, 50, 75, 100)
       ) +
@@ -2315,6 +2546,14 @@ Details:", e$message))
           avg.genes = as.integer(round(mean(seurat_obj@meta.data$nFeature_RNA)))
         )
     )
+    
+    cluster_levels <- c(
+      sort(as.numeric(unique(result$cluster[result$cluster != "total"]))),
+      "total"
+    )
+    result$cluster <- factor(result$cluster, levels = cluster_levels)
+    
+    result <- result %>% arrange(cluster)
     
     return(result)
   }
@@ -2864,13 +3103,11 @@ Details:", e$message))
     addWorksheet(wb, "heatmap_data")
     
     heat_wide <- df_heat %>%
-      mutate(cluster = as.character(cluster)) %>%
       pivot_wider(
         id_cols = cluster,
         names_from = celltype,
         values_from = score
-      ) %>%
-      arrange(cluster)
+      )
     
     heat_mat <- as.data.frame(heat_wide)
     rownames(heat_mat) <- heat_mat$cluster
@@ -2888,9 +3125,6 @@ Details:", e$message))
     
     write_dotplot_sheet <- function(wb, df, sheet_name, value_col){
       
-      # -----------------------------
-      # 确保 cluster 是数字排序
-      # -----------------------------
       df <- df %>%
         mutate(cluster = as.numeric(as.character(cluster))) %>%
         arrange(cluster, group, gene)
@@ -2982,10 +3216,12 @@ Details:", e$message))
     
     if(!is.null(df_dot1)){
       write_dotplot_sheet(wb, df_dot1, "dotplot1_avg_exp", "avg_exp")
+      write_dotplot_sheet(wb, df_dot1, "dotplot1_avg_exp_scaled", "avg_exp_scaled")
       write_dotplot_sheet(wb, df_dot1, "dotplot1_pct_exp", "pct_exp")
     }
     if(!is.null(df_dot2)){
       write_dotplot_sheet(wb, df_dot2, "dotplot2_avg_exp", "avg_exp")
+      write_dotplot_sheet(wb, df_dot1, "dotplot2_avg_exp_scaled", "avg_exp_scaled")
       write_dotplot_sheet(wb, df_dot2, "dotplot2_pct_exp", "pct_exp")
     }
     
@@ -3643,12 +3879,14 @@ Details:", e$message))
       has_dotplot1 <- any(sapply(all_sample_tables, function(x) !is.null(x$dotplot1)))
       if (has_dotplot1) {
         write_combined_dotplot_sheet(wb, "dotplot1_avg_exp", all_sample_tables, "avg_exp", "dotplot1")
+        write_combined_dotplot_sheet(wb, "dotplot1_avg_exp_scaled", all_sample_tables, "avg_exp_scaled", "dotplot1")
         write_combined_dotplot_sheet(wb, "dotplot1_pct_exp", all_sample_tables, "pct_exp", "dotplot1")
       }
       
       has_dotplot2 <- any(sapply(all_sample_tables, function(x) !is.null(x$dotplot2)))
       if (has_dotplot2) {
         write_combined_dotplot_sheet(wb, "dotplot2_avg_exp", all_sample_tables, "avg_exp", "dotplot2")
+        write_combined_dotplot_sheet(wb, "dotplot2_avg_exp_scaled", all_sample_tables, "avg_exp_scaled", "dotplot2")
         write_combined_dotplot_sheet(wb, "dotplot2_pct_exp", all_sample_tables, "pct_exp", "dotplot2")
       }
       
@@ -3827,13 +4065,14 @@ Details:", e$message))
       current_ident(NULL)
       plot_title(NULL)
       harmony_state(NULL)
-      umap_dist_state <- reactiveVal(NULL)
+      umap_dist_state(NULL)
       harmony_meta_state(NULL)
       user_nn_dims(NULL)
       uploaded_filename(NULL)
       temp_seuratObj(NULL)
       combined_plot(NULL)
       show_download_print(FALSE)
+      integration_meta_state(NULL)
       shinyjs::runjs("location.reload();")
       removeModal()
     }, error = function(e) {
