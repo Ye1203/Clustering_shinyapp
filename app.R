@@ -381,17 +381,125 @@ server <- function(input, output, session) {
       
       if ("loupe_file" %in% selected_files) {
         
-        loupe_base <- tools::file_path_sans_ext(save_path)
+        timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+        
+        loupe_base <- paste0(
+          tools::file_path_sans_ext(save_path),
+          "_",
+          timestamp
+        )
+        
         setup()
-        seurat_file <-  if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj()
-        cols_to_remove <- c("CB", "CB_original")
-        seurat_file@meta.data <- seurat_file@meta.data[, 
-                                                       !(colnames(seurat_file@meta.data) %in% cols_to_remove), 
-                                                       drop = FALSE]
+        
+        seurat_file <- if (!is.null(temp_seuratObj())) {
+          temp_seuratObj()
+        } else {
+          seuratObj()
+        }
+        
+        # ------------------------------------------------------------
+        # Rule 1: remove known barcode / cell-ID metadata
+        # ------------------------------------------------------------
+        
+        cols_to_remove <- c(
+          "CB",
+          "CB_original",
+          "CellBarcode",
+          "cell_barcode",
+          "barcode",
+          "Barcode",
+          "cell_id",
+          "CellID",
+          "cellID",
+          "original_barcode_for_loupe"
+        )
+        
+        seurat_file@meta.data <- seurat_file@meta.data[
+          ,
+          !(colnames(seurat_file@meta.data) %in% cols_to_remove),
+          drop = FALSE
+        ]
+        
+        # ------------------------------------------------------------
+        # Rule 2: remove character/factor metadata with >30000 groups
+        # ------------------------------------------------------------
+        
+        meta <- seurat_file@meta.data
+        
+        categorical_cols <- names(meta)[
+          vapply(
+            meta,
+            function(x) is.factor(x) || is.character(x),
+            logical(1)
+          )
+        ]
+        
+        if (length(categorical_cols) > 0) {
+          
+          n_groups <- vapply(
+            meta[, categorical_cols, drop = FALSE],
+            function(x) length(unique(x[!is.na(x)])),
+            integer(1)
+          )
+          
+          bad_cols <- categorical_cols[n_groups > 30000]
+          
+          if (length(bad_cols) > 0) {
+            
+            message(
+              "Removing metadata columns exceeding Loupe grouping limit: ",
+              paste(
+                paste0(
+                  bad_cols,
+                  " (",
+                  n_groups[bad_cols],
+                  " groups)"
+                ),
+                collapse = ", "
+              )
+            )
+            
+            seurat_file@meta.data <- seurat_file@meta.data[
+              ,
+              !(colnames(seurat_file@meta.data) %in% bad_cols),
+              drop = FALSE
+            ]
+          }
+        }
+        
+        # ------------------------------------------------------------
+        # PIP-seq / non-10x barcode fix
+        # ------------------------------------------------------------
+        
+        current_barcodes <- colnames(seurat_file)
+        
+        is_10x_barcode <- grepl(
+          "^[ACGT]{16}-[0-9]+$",
+          current_barcodes
+        )
+        
+        if (!all(is_10x_barcode)) {
+          
+          fake_barcodes <- paste0(
+            "AAACCCAAGAAACACT-",
+            seq_len(ncol(seurat_file))
+          )
+          
+          colnames(seurat_file) <- fake_barcodes
+          rownames(seurat_file@meta.data) <- fake_barcodes
+        }
+        
+        # ------------------------------------------------------------
+        # Create Loupe file
+        # ------------------------------------------------------------
+        
         create_loupe_from_seurat(
           seurat_file,
           output_name = loupe_base
         )
+        
+        loupe_file <- paste0(loupe_base, ".cloupe")
+        
       }
       
       if ("command_history" %in% selected_files) {
@@ -474,48 +582,171 @@ server <- function(input, output, session) {
   
   output$downloadData <- downloadHandler(
     filename = function() {
-      paste0("Clustering_",file_path_sans_ext(basename(input$save_path)), "_", Sys.Date(), ".zip")
+      paste0(
+        "Clustering_",
+        file_path_sans_ext(basename(input$save_path)),
+        "_",
+        format(Sys.time(), "%Y%m%d_%H%M%S"),
+        ".zip"
+      )
     },
     content = function(file) {
       req(seuratObj())
+      
       tmp_dir <- tempdir()
+      timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+      
       files_to_zip <- c()
       selected_files <- c()
+      
       if (isTRUE(input$rds_file_chk)) selected_files <- c(selected_files, "rds_file")
-      if (isTRUE(input$loupe_file_chk)) {selected_files <- c(selected_files, "loupe_file")}
+      if (isTRUE(input$loupe_file_chk)) selected_files <- c(selected_files, "loupe_file")
       if (isTRUE(input$cmd_history_chk)) selected_files <- c(selected_files, "command_history")
       if (!is.null(input$save_options_optional)) selected_files <- c(selected_files, input$save_options_optional)
       
+      base_name <- tools::file_path_sans_ext(basename(input$save_path))
+      
       if ("rds_file" %in% selected_files) {
-        rds_path <- file.path(tmp_dir, basename(input$save_path))
-        if (!is.null(temp_seuratObj())) saveRDS(temp_seuratObj(), file = rds_path)
-        else saveRDS(seuratObj(), file = rds_path)
+        rds_path <- file.path(
+          tmp_dir,
+          paste0(base_name, "_", timestamp, ".rds")
+        )
+        
+        if (!is.null(temp_seuratObj())) {
+          saveRDS(temp_seuratObj(), file = rds_path)
+        } else {
+          saveRDS(seuratObj(), file = rds_path)
+        }
+        
         files_to_zip <- c(files_to_zip, rds_path)
       }
       
       if ("loupe_file" %in% selected_files) {
-        seurat_file <-  if (!is.null(temp_seuratObj())) temp_seuratObj() else seuratObj()
-        cols_to_remove <- c("CB", "CB_original")
-        seurat_file@meta.data <- seurat_file@meta.data[, 
-                                                       !(colnames(seurat_file@meta.data) %in% cols_to_remove), 
-                                                       drop = FALSE]
-
-        loupe_output <- file.path(
-          tmp_dir,
-          paste0(tools::file_path_sans_ext(basename(input$save_path)))
-        )
-        setup()
-        create_loupe_from_seurat(
-          seurat_file,
-          output_name = loupe_output
+        
+        loupe_base <- paste0(
+          tools::file_path_sans_ext(input$save_path),
+          "_",
+          timestamp
         )
         
-        loupe_file <- paste0(loupe_output, ".cloupe")
+        setup()
+        
+        seurat_file <- if (!is.null(temp_seuratObj())) {
+          temp_seuratObj()
+        } else {
+          seuratObj()
+        }
+        
+        # ------------------------------------------------------------
+        # Clean metadata for LoupeR
+        # ------------------------------------------------------------
+        
+        # Rule 1:
+        # Remove known barcode / cell-ID-like metadata columns
+        cols_to_remove <- c(
+          "CB",
+          "CB_original",
+          "CellBarcode",
+          "cell_barcode",
+          "barcode",
+          "Barcode",
+          "cell_id",
+          "CellID",
+          "cellID",
+          "original_barcode_for_loupe"
+        )
+        
+        seurat_file@meta.data <- seurat_file@meta.data[
+          ,
+          !(colnames(seurat_file@meta.data) %in% cols_to_remove),
+          drop = FALSE
+        ]
+        
+        # Rule 2:
+        # Remove character/factor metadata with >30000 unique groups
+        meta <- seurat_file@meta.data
+        
+        categorical_cols <- names(meta)[
+          vapply(
+            meta,
+            function(x) is.factor(x) || is.character(x),
+            logical(1)
+          )
+        ]
+        
+        if (length(categorical_cols) > 0) {
+          
+          n_groups <- vapply(
+            meta[, categorical_cols, drop = FALSE],
+            function(x) length(unique(x[!is.na(x)])),
+            integer(1)
+          )
+          
+          bad_cols <- categorical_cols[n_groups > 30000]
+          
+          if (length(bad_cols) > 0) {
+            
+            message(
+              "Removing metadata columns exceeding Loupe grouping limit: ",
+              paste(
+                paste0(
+                  bad_cols,
+                  " (",
+                  n_groups[bad_cols],
+                  " groups)"
+                ),
+                collapse = ", "
+              )
+            )
+            
+            seurat_file@meta.data <- seurat_file@meta.data[
+              ,
+              !(colnames(seurat_file@meta.data) %in% bad_cols),
+              drop = FALSE
+            ]
+          }
+        }
+        
+        # ------------------------------------------------------------
+        # PIP-seq / non-10x barcode fix
+        # ------------------------------------------------------------
+        
+        current_barcodes <- colnames(seurat_file)
+        
+        is_10x_barcode <- grepl(
+          "^[ACGT]{16}-[0-9]+$",
+          current_barcodes
+        )
+        
+        if (!all(is_10x_barcode)) {
+          
+          fake_barcodes <- paste0(
+            "AAACCCAAGAAACACT-",
+            seq_len(ncol(seurat_file))
+          )
+          
+          colnames(seurat_file) <- fake_barcodes
+          rownames(seurat_file@meta.data) <- fake_barcodes
+        }
+        
+        # ------------------------------------------------------------
+        # Create Loupe file
+        # ------------------------------------------------------------
+        
+        create_loupe_from_seurat(
+          seurat_file,
+          output_name = loupe_base
+        )
+        
+        loupe_file <- paste0(loupe_base, ".cloupe")
         
         if (file.exists(loupe_file)) {
           files_to_zip <- c(files_to_zip, loupe_file)
         } else {
-          showNotification("Loupe file not found after creation!", type = "error")
+          showNotification(
+            "Loupe file not found after creation!",
+            type = "error"
+          )
         }
       }
       
@@ -523,7 +754,9 @@ server <- function(input, output, session) {
         cmd_lines <- c(
           paste0("orginal file: ", input$data_path),
           paste0("findvariable: ", input$findvariable %||% "variable"),
-          if(input$findvariable != "all"){paste0("valuable features: ", paste(VariableFeatures(seuratObj()), collapse = ", "))},
+          if (input$findvariable != "all") {
+            paste0("valuable features: ", paste(VariableFeatures(seuratObj()), collapse = ", "))
+          },
           paste0("npc: ", input$npc),
           paste0("nn_dims: ", input$nn_dims),
           paste0("integration_harmony: ", input$integration_harmony %||% FALSE),
@@ -531,23 +764,36 @@ server <- function(input, output, session) {
           paste0("resolution: ", input$resolution),
           paste0("umap_dist: ", input$umap_dist)
         )
+        
         if (!is.null(input$sample_select)) {
           vals <- sort(unique(seuratObj()@meta.data[[input$sample_select]]))
           for (val in vals) {
             sel <- input[[paste0("sample_cb_", val)]] %||% FALSE
             rename_val <- input[[paste0("sample_rename_", val)]] %||% val
-            cmd_lines <- c(cmd_lines, paste0("sample_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
+            cmd_lines <- c(
+              cmd_lines,
+              paste0("sample_", val, ": ", if (sel) paste0(val, "->", rename_val) else "unselected")
+            )
           }
         }
+        
         if (!is.null(current_ident())) {
           vals <- sort(unique(seuratObj()@meta.data[[current_ident()]]))
           for (val in vals) {
             sel <- input[[paste0("cluster_cb_", val)]] %||% FALSE
             rename_val <- input[[paste0("cluster_rename_", val)]] %||% val
-            cmd_lines <- c(cmd_lines, paste0("cluster_", val, ": ", if (sel) paste0(val,"->",rename_val) else "unselected"))
+            cmd_lines <- c(
+              cmd_lines,
+              paste0("cluster_", val, ": ", if (sel) paste0(val, "->", rename_val) else "unselected")
+            )
           }
         }
-        cmd_file <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$save_path)), "_CommandHistory_", ".txt"))
+        
+        cmd_file <- file.path(
+          tmp_dir,
+          paste0(base_name, "_CommandHistory_", timestamp, ".txt")
+        )
+        
         writeLines(cmd_lines, cmd_file)
         files_to_zip <- c(files_to_zip, cmd_file)
       }
@@ -559,8 +805,20 @@ server <- function(input, output, session) {
           group.by = input$harmony_metadata,
           split.by = input$harmony_metadata
         ) + ggtitle(NULL)
-        harmony_file <- file.path(tmp_dir, paste0("_HarmonyDimPlotSplit_", tools::file_path_sans_ext(basename(input$save_path)), ".png"))
-        ggsave(harmony_file, plot = harmony_plot, width = 20, height = 8, dpi = 300)
+        
+        harmony_file <- file.path(
+          tmp_dir,
+          paste0(base_name, "_HarmonyDimPlotSplit_", timestamp, ".png")
+        )
+        
+        ggsave(
+          harmony_file,
+          plot = harmony_plot,
+          width = 20,
+          height = 8,
+          dpi = 300
+        )
+        
         files_to_zip <- c(files_to_zip, harmony_file)
       }
       
@@ -572,27 +830,61 @@ server <- function(input, output, session) {
           dotplot1_plot(),
           dotplot2_plot()
         )
-        comb_file <- paste0(file_path_sans_ext(input$save_path), "_Combined_plot.pdf")
-        height_combined <- if(length(unique(heatmap_plot()$data$cluster)) <= 10){20}else{20+0.72*length(unique(heatmap_plot()$data$cluster))}
-        ggsave(comb_file, plot = comb_plot, width = 18, height = height_combined)
+        
+        comb_file <- paste0(
+          file_path_sans_ext(input$save_path),
+          "_Combined_plot_",
+          timestamp,
+          ".pdf"
+        )
+        
+        height_combined <- if (length(unique(heatmap_plot()$data$cluster)) <= 10) {
+          20
+        } else {
+          20 + 0.72 * length(unique(heatmap_plot()$data$cluster))
+        }
+        
+        ggsave(
+          comb_file,
+          plot = comb_plot,
+          width = 18,
+          height = height_combined
+        )
+        
         files_to_zip <- c(files_to_zip, comb_file)
       }
+      
       if ("gene_marker" %in% selected_files) {
         gene_file <- if (!is.null(uploaded_file_info()) && file.exists(uploaded_file_info()$datapath)) {
           uploaded_file_info()$datapath
         } else {
           file.path(getwd(), "Gene_Markers.xlsx")
         }
+        
         if (!file.exists(gene_file)) {
           showNotification("Gene Marker file not found for download!", type = "error")
         } else {
-          gene_dest <- file.path(tmp_dir, paste0(tools::file_path_sans_ext(basename(input$save_path)), "_Gene_Marker.xlsx"))
+          gene_dest <- file.path(
+            tmp_dir,
+            paste0(base_name, "_Gene_Marker_", timestamp, ".xlsx")
+          )
+          
           file.copy(gene_file, gene_dest, overwrite = TRUE)
           files_to_zip <- c(files_to_zip, gene_dest)
         }
       }
       
-      zip::zip(zipfile = file, files = files_to_zip, mode = "cherry-pick")
+      zip::zip(
+        zipfile = file,
+        files = files_to_zip,
+        mode = "cherry-pick"
+      )
+      
+      showNotification(
+        "The data has been successfully generated. Downloading now please check your download folder.",
+        type = "message",
+        duration = 5
+      )
     },
     contentType = "application/zip"
   )
@@ -716,7 +1008,7 @@ server <- function(input, output, session) {
     ui_list <- append(ui_list, list(hr()))
     
     # --- Find Neighbors ---
-    if (stop_flag || is.null(seuratObj()@reductions$pca) || seuratObj()@reductions$pca@assay.used != "RNA") {
+    if (stop_flag || is.null(seuratObj()@reductions$pca)) {
       ui_list <- append(ui_list, list(
         tags$p("🔴 FIND NEIGHBORS", style = "color:red; font-weight:bold; font-size:14px;")
       ))
@@ -1920,6 +2212,11 @@ server <- function(input, output, session) {
       )
       
       openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      showNotification(
+        "The data has been successfully generated. Downloading now please check your download folder.",
+        type = "message",
+        duration = 5
+      )
     }
   )
   
@@ -2483,13 +2780,13 @@ Details:", e$message))
       geom_point(aes(size = pct_exp, color = avg_exp_scaled)) +
       scale_color_gradientn(
         colors = cols,
-        name = "Avg Exp",
+        name = "Avg Exp Scaled",
         limits = c(col.min, col.max),
         guide = guide_colorbar(barwidth = 5, barheight = 0.5)
       ) +
       scale_size(
         range = c(0, 6),
-        name = "Per Exp Scaled",
+        name = "Per Exp",
         limits = c(0, 100),
         breaks = c(0, 25, 50, 75, 100)
       ) +
@@ -3285,6 +3582,11 @@ Details:", e$message))
       }
       zip_files <- c(zip_files, umap_file, combined_file, combined_data)
       zip::zip(zipfile = file, files = zip_files, mode = "cherry-pick")
+      showNotification(
+        "The data has been successfully generated. Downloading now; please check your download folder.",
+        type = "message",
+        duration = 5
+      )
     }
   )
   
@@ -3385,12 +3687,15 @@ Details:", e$message))
         
         original_levels <- levels(factor(obj@meta.data[[col]]))
         obj@meta.data[[col]] <- as.character(obj@meta.data[[col]])
+        
+        # rename
         for (val in vals) {
           new_name <- input[[paste0(prefix, "_", val)]]
           if (!is.null(new_name) && nzchar(new_name)) {
             obj@meta.data[[col]][obj@meta.data[[col]] == val] <- new_name
           }
         }
+        
         new_levels <- sapply(original_levels, function(val) {
           new_name <- input[[paste0(prefix, "_", val)]]
           if (!is.null(new_name) && nzchar(new_name)) {
@@ -3399,7 +3704,9 @@ Details:", e$message))
             val
           }
         })
-        new_levels <- new_levels[new_levels %in% unique(obj@meta.data[[col]])]
+        
+        new_levels <- new_levels[new_levels %in% obj@meta.data[[col]]]
+        new_levels <- unique(new_levels)
         
         obj@meta.data[[col]] <- factor(
           obj@meta.data[[col]],
@@ -3960,6 +4267,11 @@ Details:", e$message))
       file.copy(combined_excel, excel_dest, overwrite = TRUE)
       
       zip::zipr(zipfile = file, files = c(pdf_dest, excel_dest), recurse = FALSE)
+      showNotification(
+        "The data has been successfully generated. Downloading now; please check your download folder.",
+        type = "message",
+        duration = 5
+      )
     },
     contentType = "application/zip"
   )
@@ -4010,6 +4322,11 @@ Details:", e$message))
       old_wd <- setwd(temp_zip_dir)
       zip(zipfile = file, files = ".", flags = "-rq")
       setwd(old_wd)
+      showNotification(
+        "The data has been successfully generated. Downloading now; please check your download folder.",
+        type = "message",
+        duration = 5
+      )
     },
     contentType = "application/zip"
   )

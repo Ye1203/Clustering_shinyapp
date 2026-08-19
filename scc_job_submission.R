@@ -36,6 +36,7 @@ submit_scc_job <- function(seuratObj,
   # GENERATE SEPARATE HARMONY RSCRIPT TO AVOID MEMORY ISSUES
   harmony_r_script_path <- file.path(save_path, "harmony_job_script.R")
   harmony_code <- paste0('
+  source("/projectnb/wax-es/00_shinyapp/Clustering/renv/activate.R")
 library(Seurat)
 library(harmony)
 output_file_path <- "', save_path, '"
@@ -64,6 +65,7 @@ saveRDS(seurat_obj, file.path(output_file_path, paste0("input_seurat_file_pca_",
   
   r_script_path <- file.path(save_path, "scc_job_script.R")
     r_code <- paste0('
+source("/projectnb/wax-es/00_shinyapp/Clustering/renv/activate.R")
 # Load required libraries
 library(Seurat)
 library(ggplot2)
